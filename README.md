@@ -133,7 +133,7 @@ See the [examples README](./examples/README.md) for detailed usage instructions.
 
 1. **Clone the repository**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/redhat-data-and-ai/template-agent.git
    cd template-agent
    ```
 
@@ -157,15 +157,10 @@ See the [examples README](./examples/README.md) for detailed usage instructions.
 
 5. **Run template-mcp-server** following https://github.com/redhat-data-and-ai/template-mcp-server
 
-6. **Run pgvector**
-   ```bash
-   podman-compose up pgvector
-   # Edit .env with your configuration
-   ```
 
 6. **Run the application**
    ```bash
-   python -m template_agent.src.main
+   uv run python -m template_agent.src.main
    ```
 
 
@@ -207,7 +202,7 @@ curl "http://localhost:8081/health"
 
 #### Required
 - `AGENT_HOST`: Server host (default: 0.0.0.0)
-- `AGENT_PORT`: Server port (default: 8081)
+- `AGENT_PORT`: Server port (default: 5002)
 - `PYTHON_LOG_LEVEL`: Logging level (default: INFO)
 
 #### Database
@@ -229,7 +224,7 @@ curl "http://localhost:8081/health"
 ```bash
 # .env file
 AGENT_HOST=0.0.0.0
-AGENT_PORT=8081
+AGENT_PORT=5002
 PYTHON_LOG_LEVEL=INFO
 
 POSTGRES_USER=myuser
