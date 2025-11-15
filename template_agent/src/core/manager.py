@@ -74,8 +74,16 @@ class AgentManager:
         """
         # Use persistent agent for both streaming and state persistence
         # This ensures LangGraph handles state management automatically
+        if request.user_id:
+            user_id = request.user_id
+        else:
+            user_id = None
+        if request.message:
+            message = request.message
+        else:
+            message = None
         async with get_template_agent(
-            self.redhat_sso_token, enable_checkpointing=True
+            self.redhat_sso_token, enable_checkpointing=True, user_id=user_id, message=message
         ) as persistent_agent:
             try:
                 # Prepare input for the persistent agent
