@@ -16,6 +16,20 @@ RUN pip install uv
 RUN uv venv
 RUN source /app/.venv/bin/activate
 RUN uv pip install -r pyproject.toml
+
+# Create cache directory for embedding model
+RUN mkdir -p /app/.cache/huggingface && \
+    chown -R default:root /app/.cache && \
+    chmod -R 775 /app/.cache
+
+# Set cache environment variables for embedding model
+ENV HF_HOME=/app/.cache/huggingface
+ENV HUGGINGFACE_HUB_CACHE=/app/.cache/huggingface/hub
+
+RUN chown -R default:root /app/.cache && \
+    find /app/.cache -type d -exec chmod 775 {} \; && \
+    find /app/.cache -type f -exec chmod 664 {} \;
+
 USER default
 
 # --------------------------------------------------------------------------------------------------

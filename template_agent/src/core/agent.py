@@ -10,11 +10,12 @@ from typing import Optional
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.store.postgres.aio import AsyncPostgresStore
 from langgraph.prebuilt import create_react_agent
-
+from langmem import create_manage_memory_tool
 from template_agent.src.core.exceptions.exceptions import AppException, AppExceptionCode
-from template_agent.src.core.prompt import get_system_prompt
-from template_agent.src.core.storage import get_global_checkpoint
+from template_agent.src.core.prompt import get_system_prompt, get_user_preferences, get_contextual_memories
+from template_agent.src.core.storage import get_global_checkpoint, get_global_memory_store, get_embedding_config
 from template_agent.src.settings import settings
 from template_agent.utils.pylogger import get_python_logger
 
@@ -58,7 +59,7 @@ async def initialize_database() -> None:
 
 @asynccontextmanager
 async def get_template_agent(
-    sso_token: Optional[str] = None, enable_checkpointing: bool = True
+    sso_token: Optional[str] = None, enable_checkpointing: bool = True, user_id: Optional[str] = None, message: Optional[str] = None
 ):
     """Get a fully initialized template agent.
 
@@ -71,14 +72,46 @@ async def get_template_agent(
             it will be used for authorization headers in MCP client requests.
         enable_checkpointing: Whether to enable checkpointing/persistence.
             Set to False for streaming-only operations that shouldn't save to DB.
-
+        user_id: Optional user ID for the agent. If provided, it will be used to store user preferences and context.
+        message: Optional message for the agent. If provided, it will be used to fetch contextual memories based on the user's question.
     Yields:
         The initialized template agent instance.
 
     Raises:
         Exception: If there are issues with database connections or agent setup.
     """
-    # Initialize MCP client and get tools
+    # Initialize MCP client and get tools (optional for local development)
+    try:
+        if user_id:
+            preference_namespace = ("preferences",user_id)
+            memory_namespace = ("memory",user_id)
+            logger.info(f"Using user_id: {user_id} for memory namespace")
+        else:
+            preference_namespace = ("preferences",)
+            memory_namespace = ("memory",)
+            logger.info("Using default memory namespace")
+
+        store_preference_memory_tool = create_manage_memory_tool(
+            name="store_preference_memory",
+            instructions="Use this tool to store or update information about the user's preferences that will always be required by the agent to respond to the user's question, such as response formatting preferences, language preferences, etc.",
+            namespace=preference_namespace,
+        )
+        
+        store_contextual_memory_tool = create_manage_memory_tool(
+            name="store_contextual_memory",
+            instructions="Use this tool to store or update contextual information that will be required by the agent to respond to the user's question based on the question's context, such as the user's favorite color, favorite food, favorite movie, etc.",
+            namespace=memory_namespace,
+        )
+
+        memory_tools = [
+            store_preference_memory_tool,
+            store_contextual_memory_tool,
+        ]
+        logger.info("Successfully created manage preference and contextual memory tools")
+    except Exception as e:
+        logger.error(f"Error creating manage preference and contextual memory tools: {e}")
+        memory_tools = []
+
     tools = []
 
     # Log MCP connection details for debugging
@@ -160,6 +193,7 @@ async def get_template_agent(
                 AppExceptionCode.PRODUCTION_MCP_CONNECTION_ERROR,
             )
 
+    all_tools = tools + memory_tools
     # Initialize the language model
     model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
 
@@ -181,12 +215,16 @@ async def get_template_agent(
         logger.info("Using single global checkpoint for local development")
         # Use single checkpoint instance for both checkpointer and store
         checkpoint = get_global_checkpoint()
+        store = get_global_memory_store()
+        preferences = await get_user_preferences(store, preference_namespace)
+        memories = await get_contextual_memories(store, memory_namespace, message)
+        prompt = get_system_prompt() + preferences + memories
         agent_redhat = create_react_agent(
             model=model,
-            prompt=get_system_prompt(),
-            tools=tools,
+            prompt=prompt,
+            tools=all_tools,
             checkpointer=checkpoint,
-            store=checkpoint,
+            store=store,
         )
         logger.info(
             "Template agent initialized successfully with single global checkpoint"
@@ -197,18 +235,25 @@ async def get_template_agent(
         logger.info("Using PostgreSQL checkpoint for production")
         async with AsyncPostgresSaver.from_conn_string(
             settings.database_uri
-        ) as checkpoint:
+        ) as checkpoint, AsyncPostgresStore.from_conn_string(
+            settings.database_uri,
+            index=get_embedding_config()
+        ) as store:
             # Setup database connection once
             if hasattr(checkpoint, "setup"):
                 await checkpoint.setup()
-
+            if hasattr(store, "setup"):
+                await store.setup()
+            preferences = await get_user_preferences(store, preference_namespace)
+            memories = await get_contextual_memories(store, memory_namespace, message)
+            prompt = get_system_prompt() + preferences + memories
             # Create the agent with single checkpoint instance for both checkpointer and store
             agent_redhat = create_react_agent(
                 model=model,
-                prompt=get_system_prompt(),
-                tools=tools,
+                prompt=prompt,
+                tools=all_tools,
                 checkpointer=checkpoint,
-                store=checkpoint,
+                store=store,
             )
 
             logger.info(

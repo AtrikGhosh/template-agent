@@ -36,6 +36,8 @@ services:
       - POSTGRES_DB=pgvector
       - POSTGRES_USER=pgvector
       - POSTGRES_PASSWORD=pgvector
+    volumes:
+      - huggingface_cache:/app/.cache/huggingface
     depends_on:
       pgvector:
         condition: service_healthy
@@ -50,6 +52,8 @@ services:
 
 volumes:
   pgvector_data:
+    driver: local
+  huggingface_cache:
     driver: local
 
 networks:
