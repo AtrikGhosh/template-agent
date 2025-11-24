@@ -60,12 +60,12 @@ class Settings(BaseSettings):
     HF_EMBEDDING_MODEL_NAME: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",
         json_schema_extra={"env": "HF_EMBEDDING_MODEL_NAME"},
-        description="HuggingFace embedding model name to use"
+        description="HuggingFace embedding model name to use",
     )
     HF_EMBEDDING_MODEL_DIMS: int = Field(
         default=384,
         json_schema_extra={"env": "HF_EMBEDDING_MODEL_DIMS"},
-        description="Embedding dimensions for the model (384 for MiniLM, 768 for mpnet)"
+        description="Embedding dimensions for the model (384 for MiniLM, 768 for mpnet)",
     )
 
     # Database Configuration
