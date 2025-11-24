@@ -6,16 +6,17 @@ the entire application lifecycle when using in-memory storage mode.
 
 from typing import Optional
 
+from langchain_huggingface import HuggingFaceEmbeddings
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
+
 from template_agent.src.settings import settings
 from template_agent.utils.pylogger import get_python_logger
-from langchain_huggingface import HuggingFaceEmbeddings
 
 # Initialize embedding model from settings
 embedding_model = HuggingFaceEmbeddings(
     model_name=settings.HF_EMBEDDING_MODEL_NAME,
-    encode_kwargs={'normalize_embeddings': True}
+    encode_kwargs={"normalize_embeddings": True},
 )
 
 logger = get_python_logger(settings.PYTHON_LOG_LEVEL)
@@ -30,6 +31,7 @@ _global_memory_store: Optional[InMemoryStore] = None
 # Global thread registry to track threads by user_id
 _thread_registry: dict[str, set[str]] = {}
 
+
 def get_embedding_config() -> dict:
     """Get the embedding configuration.
 
@@ -37,11 +39,12 @@ def get_embedding_config() -> dict:
         The embedding configuration.
     """
     return {
-        'dims': settings.HF_EMBEDDING_MODEL_DIMS,
-        'embed': embedding_model,
-        'fields': ['content'],
-        'distance_type': 'cosine',
+        "dims": settings.HF_EMBEDDING_MODEL_DIMS,
+        "embed": embedding_model,
+        "fields": ["content"],
+        "distance_type": "cosine",
     }
+
 
 def get_global_checkpoint() -> InMemorySaver:
     """Get the global in-memory checkpoint instance.
@@ -59,6 +62,7 @@ def get_global_checkpoint() -> InMemorySaver:
         logger.info("Created global InMemorySaver checkpoint instance")
     return _global_checkpoint
 
+
 def get_global_memory_store() -> InMemoryStore:
     """Get the global in-memory memory store instance.
 
@@ -67,11 +71,10 @@ def get_global_memory_store() -> InMemoryStore:
     """
     global _global_memory_store
     if _global_memory_store is None:
-        _global_memory_store = InMemoryStore(
-            index=get_embedding_config()
-        )
+        _global_memory_store = InMemoryStore(index=get_embedding_config())
         logger.info("Created global InMemoryStore memory store instance")
     return _global_memory_store
+
 
 def register_thread(user_id: str, thread_id: str) -> None:
     """Register a thread for a user.
