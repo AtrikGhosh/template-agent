@@ -83,7 +83,10 @@ class AgentManager:
         else:
             message = None
         async with get_template_agent(
-            self.redhat_sso_token, enable_checkpointing=True, user_id=user_id, message=message
+            self.redhat_sso_token,
+            enable_checkpointing=True,
+            user_id=user_id,
+            message=message,
         ) as persistent_agent:
             try:
                 # Prepare input for the persistent agent

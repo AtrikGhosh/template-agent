@@ -61,7 +61,7 @@ def get_system_prompt() -> str:
     )
 
 
-async def get_user_preferences(store: BaseStore, namespace: tuple) -> dict:
+async def get_user_preferences(store: BaseStore, namespace: tuple) -> str:
     """Get the user's preferences from the store.
 
     This function returns the user's preferences from the store.
@@ -79,7 +79,10 @@ async def get_user_preferences(store: BaseStore, namespace: tuple) -> dict:
         return preferences_str
     return ""
 
-async def get_contextual_memories(store: BaseStore, namespace: tuple, message: str) -> dict:
+
+async def get_contextual_memories(
+    store: BaseStore, namespace: tuple, message: str
+) -> str:
     """Get the contextual memories from the store.
 
     This function returns the contextual memories from the store.
