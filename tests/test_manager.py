@@ -3,7 +3,7 @@
 import json
 from collections.abc import AsyncGenerator
 from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from uuid import uuid4
 
 import pytest
@@ -538,3 +538,245 @@ class TestAgentManager:
                 "Error saving final conversation state"
                 in mock_logger.error.call_args[0][0]
             )
+
+    def test_handle_update_events_error(self, agent_manager):
+        """Test _handle_update_events error handling (lines 368-370)."""
+        from langchain_core.messages import AIMessage
+
+        # Create an update event with a message
+        event = {"agent": {"messages": [AIMessage(content="test message")]}}
+
+        with patch(
+            "template_agent.src.core.manager.langchain_to_chat_message"
+        ) as mock_langchain_to_chat:
+            # Mock langchain_to_chat_message to return a ChatMessage
+            from template_agent.src.schema import ChatMessage
+
+            mock_chat = ChatMessage(role="assistant", content="test", type="ai")
+            mock_langchain_to_chat.return_value = mock_chat
+
+            with patch.object(
+                agent_manager, "_convert_chat_message_to_simple_format"
+            ) as mock_convert:
+                # Make _convert_chat_message_to_simple_format raise an exception
+                mock_convert.side_effect = Exception("Formatting error")
+
+                with patch("template_agent.src.core.manager.app_logger") as mock_logger:
+                    result = agent_manager._handle_update_events(
+                        event, "run_123", "thread_123", None
+                    )
+
+                    # Should return error event
+                    assert len(result) == 1
+                    assert result[0]["type"] == "error"
+                    assert result[0]["content"]["message"] == "Message formatting error"
+                    assert result[0]["content"]["recoverable"] is True
+                    mock_logger.error.assert_called_with(
+                        "Error formatting message: Formatting error"
+                    )
+
+    def test_handle_token_events_with_tool_id(self, agent_manager):
+        """Test _handle_token_events with tool_call_id (lines 405, 408)."""
+        from langchain_core.messages import AIMessageChunk
+
+        # Test with tool_call_id from current tracking
+        agent_manager._current_tool_call_id = "tool_123"
+
+        msg = AIMessageChunk(content="test content", id="msg_1")
+        metadata = {"tags": []}  # No skip_stream tag
+        event = (msg, metadata)
+
+        result = agent_manager._handle_token_events(event)
+
+        # Should return token event with tool_call_id
+        assert result is not None
+        assert result["type"] == "token"
+        assert result["content"] == "test content"
+        assert result["tool_call_id"] == "tool_123"
+
+        # Test with empty content (should return None) - line 408
+        msg_empty = AIMessageChunk(content="", id="msg_2")
+        event_empty = (msg_empty, metadata)
+        result = agent_manager._handle_token_events(event_empty)
+        assert result is None
+
+    def test_convert_message_with_optional_fields(self, agent_manager):
+        """Test _convert_chat_message_to_simple_format with tool_call_id and ai_call_id (lines 470, 478)."""
+        from template_agent.src.schema import ChatMessage
+
+        # Create a message with optional fields
+        msg = ChatMessage(
+            role="assistant",
+            content="test",
+            type="ai",
+            tool_call_id="tool_call_123",  # Line 470
+            ai_call_id="ai_call_123",  # Line 478
+        )
+
+        result = agent_manager._convert_chat_message_to_simple_format(
+            msg, "thread_1", "session_1"
+        )
+
+        # Verify optional fields are included
+        assert result["tool_call_id"] == "tool_call_123"
+        assert result["ai_call_id"] == "ai_call_123"
+        assert result["thread_id"] == "thread_1"
+        assert result["session_id"] == "session_1"
+
+    def test_extract_tool_call_id_from_tool_message(self, agent_manager):
+        """Test _extract_tool_call_id_from_message with tool_call_id (lines 508, 511-513)."""
+        from langchain_core.messages import AIMessageChunk
+
+        # Test successful path with tool_call_id (line 508)
+        # Create a message that doesn't have tool_calls or tool_call_chunks but has tool_call_id
+        msg = MagicMock(spec=AIMessageChunk)
+        # Ensure hasattr checks work but values are falsy/None
+        msg.tool_calls = []  # Empty list - falsy but exists
+        msg.tool_call_chunks = []  # Empty list - falsy but exists
+        msg.tool_call_id = "tool_id_123"  # This should be returned
+
+        result = agent_manager._extract_tool_call_id_from_message(msg)
+        assert result == "tool_id_123"
+
+        # Test exception path (lines 511-513)
+        # Create a message where accessing tool_calls raises an exception
+        bad_msg = MagicMock()
+        # Make the tool_calls attribute access raise an exception
+        bad_msg.tool_calls = MagicMock()
+        bad_msg.tool_calls.__getitem__ = MagicMock(side_effect=KeyError("No such key"))
+        bad_msg.tool_calls.__bool__ = MagicMock(return_value=True)  # Make it truthy
+
+        with patch("template_agent.src.core.manager.app_logger") as mock_logger:
+            result = agent_manager._extract_tool_call_id_from_message(bad_msg)
+            assert result is None
+            # Verify debug was called with the error
+            mock_logger.debug.assert_called_once()
+            assert (
+                "Could not extract tool call ID from message"
+                in mock_logger.debug.call_args[0][0]
+            )
+
+    def test_update_tool_tracking_with_tool_message(self, agent_manager):
+        """Test _update_tool_call_tracking with ToolMessage (lines 557-560)."""
+        # Test tracking tool response ID (lines 557-560)
+        # Create a message without tool_calls but with tool_call_id
+        msg = MagicMock()
+        # Make tool_calls falsy but existing
+        msg.tool_calls = []  # Empty list - falsy
+        msg.tool_call_id = "tool_resp_123"  # Has tool_call_id
+
+        # Create metadata dict (required for messages mode)
+        metadata = {}
+
+        with patch("template_agent.src.core.manager.app_logger") as mock_logger:
+            # Call with messages mode - expects (msg, metadata) tuple
+            agent_manager._update_tool_call_tracking("messages", (msg, metadata))
+
+            # Verify tool_call_id was tracked
+            assert agent_manager._current_tool_call_id == "tool_resp_123"
+            mock_logger.debug.assert_called_with(
+                "Tracking tool response ID from message: tool_resp_123"
+            )
+
+    def test_update_tool_tracking_exception_handling(self, agent_manager):
+        """Test _update_tool_call_tracking exception handling (lines 562-563)."""
+        # Create an event that will cause an exception when iterating
+        bad_event = MagicMock()
+        # Make iteration fail
+        bad_event.__iter__ = MagicMock(side_effect=Exception("Iteration error"))
+
+        with patch("template_agent.src.core.manager.app_logger") as mock_logger:
+            # Should not raise exception, just log it
+            agent_manager._update_tool_call_tracking("messages", bad_event)
+
+            # Verify error was logged
+            mock_logger.debug.assert_called_with(
+                "Error updating tool call tracking: Iteration error"
+            )
+
+
+class TestAgentManagerMissingCoverage:
+    """Additional tests to achieve 100% coverage for AgentManager - testing specific missing lines."""
+
+    @pytest.fixture
+    def agent_manager(self):
+        """Create an AgentManager instance."""
+        return AgentManager(redhat_sso_token="test_token")
+
+    @pytest.mark.asyncio
+    async def test_stream_response_without_user_id_and_message(self, agent_manager):
+        """Test stream_response when user_id and message are None (lines 80, 84)."""
+        # Create request without user_id (message can't be None per schema)
+        request = StreamRequest(
+            message="",  # Empty string to test the else branch
+            thread_id="thread_123",
+            session_id="session_456",
+            user_id=None,
+            stream_tokens=True,
+        )
+
+        with patch(
+            "template_agent.src.core.manager.get_template_agent"
+        ) as mock_get_agent:
+            mock_agent = AsyncMock()
+            mock_agent.astream = AsyncMock(return_value=AsyncMock())
+            mock_agent.astream.return_value.__aiter__.return_value = []
+            mock_get_agent.return_value.__aenter__.return_value = mock_agent
+
+            # Patch _handle_input to return valid data
+            with patch.object(agent_manager, "_handle_input") as mock_handle_input:
+                mock_handle_input.return_value = (
+                    {"input": {"messages": [{"content": "test", "type": "human"}]}},
+                    "run_123",
+                    "thread_123",
+                )
+
+                # Execute - should handle None user_id and message
+                events = []
+                async for event in agent_manager.stream_response(request):
+                    events.append(event)
+
+                # Verify get_template_agent was called with None for empty/missing values
+                mock_get_agent.assert_called_once_with(
+                    "test_token",
+                    enable_checkpointing=True,
+                    user_id=None,  # None because user_id was None
+                    message=None,  # None because message was empty string
+                )
+
+    @pytest.mark.asyncio
+    async def test_stream_response_non_tuple_event(self, agent_manager):
+        """Test stream_response when event is not a tuple (line 109)."""
+        request = StreamRequest(
+            message="test",
+            thread_id="thread_123",
+            stream_tokens=True,
+        )
+
+        with patch(
+            "template_agent.src.core.manager.get_template_agent"
+        ) as mock_get_agent:
+            mock_agent = AsyncMock()
+
+            # Create a mock async iterator that yields non-tuple events
+            async def mock_stream():
+                yield "not_a_tuple"  # This should be skipped
+                yield ("messages", [AIMessage(content="test response")])
+
+            mock_agent.astream = MagicMock(return_value=mock_stream())
+            mock_get_agent.return_value.__aenter__.return_value = mock_agent
+
+            with patch.object(agent_manager, "_handle_input") as mock_handle_input:
+                mock_handle_input.return_value = (
+                    {"input": {"messages": [{"content": "test", "type": "human"}]}},
+                    "run_123",
+                    "thread_123",
+                )
+
+                # Execute
+                events = []
+                async for event in agent_manager.stream_response(request):
+                    events.append(event)
+
+                # Should have processed only the tuple event
+                assert len(events) >= 1

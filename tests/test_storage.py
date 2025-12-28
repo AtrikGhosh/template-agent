@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from template_agent.src.core.storage import (
     get_embedding_config,
+    get_embedding_model,
     get_global_checkpoint,
     get_global_memory_store,
     get_shared_checkpointer,
@@ -20,26 +21,97 @@ class TestEmbeddingConfig:
     """Test cases for embedding configuration."""
 
     @patch("template_agent.src.core.storage.settings")
-    @patch("template_agent.src.core.storage.embedding_model")
-    def test_get_embedding_config(self, mock_embedding_model, mock_settings):
+    @patch("template_agent.src.core.storage.get_embedding_model")
+    def test_get_embedding_config(self, mock_get_embedding_model, mock_settings):
         """Test get_embedding_config returns correct configuration."""
-        mock_settings.HF_EMBEDDING_MODEL_DIMS = 768
+        mock_settings.GOOGLE_EMBEDDING_MODEL_DIMS = 768
+        mock_embedding = MagicMock()
+        mock_get_embedding_model.return_value = mock_embedding
 
         config = get_embedding_config()
 
         assert config["dims"] == 768
-        assert config["embed"] == mock_embedding_model
+        assert config["embed"] == mock_embedding
         assert config["fields"] == ["content"]
         assert config["distance_type"] == "cosine"
 
     @patch("template_agent.src.core.storage.settings")
-    def test_get_embedding_config_with_different_dims(self, mock_settings):
+    @patch("template_agent.src.core.storage.get_embedding_model")
+    def test_get_embedding_config_with_different_dims(
+        self, mock_get_embedding_model, mock_settings
+    ):
         """Test get_embedding_config with different dimensions."""
-        mock_settings.HF_EMBEDDING_MODEL_DIMS = 512
+        mock_settings.GOOGLE_EMBEDDING_MODEL_DIMS = 512
+        mock_embedding = MagicMock()
+        mock_get_embedding_model.return_value = mock_embedding
 
         config = get_embedding_config()
 
         assert config["dims"] == 512
+
+
+class TestEmbeddingModel:
+    """Test cases for embedding model management."""
+
+    @patch("template_agent.src.core.storage.settings")
+    @patch("template_agent.src.core.storage.GoogleGenerativeAIEmbeddings")
+    def test_get_embedding_model_creates_singleton(
+        self, mock_embeddings_class, mock_settings
+    ):
+        """Test that get_embedding_model creates a singleton instance."""
+        # Reset to ensure clean state
+        reset_global_storage()
+
+        # Mock settings
+        mock_settings.GOOGLE_EMBEDDING_MODEL_NAME = "models/embedding-001"
+        mock_settings.GOOGLE_EMBEDDING_TASK_TYPE = "retrieval_document"
+        mock_settings.GOOGLE_EMBEDDING_MODEL_DIMS = 768
+
+        mock_embedding = MagicMock()
+        mock_embeddings_class.return_value = mock_embedding
+
+        # First call should create instance
+        model1 = get_embedding_model()
+        assert model1 == mock_embedding
+        mock_embeddings_class.assert_called_once_with(
+            model="models/embedding-001", task_type="retrieval_document", dimensions=768
+        )
+
+        # Second call should return same instance
+        model2 = get_embedding_model()
+        assert model2 == model1
+        # Still only called once
+        assert mock_embeddings_class.call_count == 1
+
+        # Clean up
+        reset_global_storage()
+
+    @patch("template_agent.src.core.storage.settings")
+    @patch("template_agent.src.core.storage.GoogleGenerativeAIEmbeddings")
+    @patch("template_agent.src.core.storage.logger")
+    def test_get_embedding_model_logs_creation(
+        self, mock_logger, mock_embeddings_class, mock_settings
+    ):
+        """Test that embedding model creation is logged."""
+        # Reset to ensure clean state
+        reset_global_storage()
+
+        # Mock settings
+        mock_settings.GOOGLE_EMBEDDING_MODEL_NAME = "models/embedding-001"
+        mock_settings.GOOGLE_EMBEDDING_TASK_TYPE = "retrieval_document"
+        mock_settings.GOOGLE_EMBEDDING_MODEL_DIMS = 768
+
+        mock_embedding = MagicMock()
+        mock_embeddings_class.return_value = mock_embedding
+
+        get_embedding_model()
+
+        mock_logger.info.assert_called_with(
+            "Initialized Google Generative AI Embeddings with 768 dimensions"
+        )
+
+        # Clean up
+        reset_global_storage()
 
 
 class TestGlobalCheckpoint:

@@ -56,16 +56,21 @@ class Settings(BaseSettings):
         default=False, json_schema_extra={"env": "USE_INMEMORY_SAVER"}
     )
 
-    # Embedding Model Configuration
-    HF_EMBEDDING_MODEL_NAME: str = Field(
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        json_schema_extra={"env": "HF_EMBEDDING_MODEL_NAME"},
-        description="HuggingFace embedding model name to use",
+    # Google Embedding Model Configuration
+    GOOGLE_EMBEDDING_MODEL_NAME: str = Field(
+        default="models/embedding-001",
+        json_schema_extra={"env": "GOOGLE_EMBEDDING_MODEL_NAME"},
+        description="Google AI embedding model name to use",
     )
-    HF_EMBEDDING_MODEL_DIMS: int = Field(
-        default=384,
-        json_schema_extra={"env": "HF_EMBEDDING_MODEL_DIMS"},
-        description="Embedding dimensions for the model (384 for MiniLM, 768 for mpnet)",
+    GOOGLE_EMBEDDING_MODEL_DIMS: int = Field(
+        default=768,
+        json_schema_extra={"env": "GOOGLE_EMBEDDING_MODEL_DIMS"},
+        description="Embedding dimensions for the Google model (3072 for highest accuracy, also supports 1536 or 768)",
+    )
+    GOOGLE_EMBEDDING_TASK_TYPE: str = Field(
+        default="retrieval_document",
+        json_schema_extra={"env": "GOOGLE_EMBEDDING_TASK_TYPE"},
+        description="Task type for embeddings: retrieval_document, retrieval_query, semantic_similarity, classification, clustering",
     )
 
     # Database Configuration

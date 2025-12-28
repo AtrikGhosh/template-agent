@@ -6,20 +6,17 @@ the entire application lifecycle when using in-memory storage mode.
 
 from typing import Optional
 
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from template_agent.src.settings import settings
 from template_agent.utils.pylogger import get_python_logger
 
-# Initialize embedding model from settings
-embedding_model = HuggingFaceEmbeddings(
-    model_name=settings.HF_EMBEDDING_MODEL_NAME,
-    encode_kwargs={"normalize_embeddings": True},
-)
-
 logger = get_python_logger(settings.PYTHON_LOG_LEVEL)
+
+# Global embedding model instance - initialized lazily
+_embedding_model: Optional[GoogleGenerativeAIEmbeddings] = None
 
 # Global checkpoint instance - single instance for the entire application lifecycle
 _global_checkpoint: Optional[InMemorySaver] = None
@@ -32,6 +29,25 @@ _global_memory_store: Optional[InMemoryStore] = None
 _thread_registry: dict[str, set[str]] = {}
 
 
+def get_embedding_model() -> GoogleGenerativeAIEmbeddings:
+    """Get or create the embedding model instance.
+
+    Returns:
+        The GoogleGenerativeAIEmbeddings instance.
+    """
+    global _embedding_model
+    if _embedding_model is None:
+        _embedding_model = GoogleGenerativeAIEmbeddings(
+            model=settings.GOOGLE_EMBEDDING_MODEL_NAME,
+            task_type=settings.GOOGLE_EMBEDDING_TASK_TYPE,
+            dimensions=settings.GOOGLE_EMBEDDING_MODEL_DIMS,
+        )
+        logger.info(
+            f"Initialized Google Generative AI Embeddings with {settings.GOOGLE_EMBEDDING_MODEL_DIMS} dimensions"
+        )
+    return _embedding_model
+
+
 def get_embedding_config() -> dict:
     """Get the embedding configuration.
 
@@ -39,8 +55,8 @@ def get_embedding_config() -> dict:
         The embedding configuration.
     """
     return {
-        "dims": settings.HF_EMBEDDING_MODEL_DIMS,
-        "embed": embedding_model,
+        "dims": settings.GOOGLE_EMBEDDING_MODEL_DIMS,
+        "embed": get_embedding_model(),
         "fields": ["content"],
         "distance_type": "cosine",
     }
@@ -110,10 +126,11 @@ def reset_global_storage() -> None:
 
     This is useful for testing or when you want to clear all data.
     """
-    global _global_checkpoint, _thread_registry
+    global _global_checkpoint, _global_memory_store, _thread_registry, _embedding_model
     _global_checkpoint = None
     _global_memory_store = None
     _thread_registry = {}
+    _embedding_model = None
     logger.info("Reset global checkpoint instance and thread registry")
 
 
