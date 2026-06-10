@@ -104,6 +104,7 @@ async def refresh_access_token(
 
     token_url: str = _get_token_endpoint()
     client_id: str = os.environ.get("SSO_CLIENT_ID", "")
+    client_secret: str = os.environ.get("SSO_CLIENT_SECRET", "")
     if not token_url or not client_id:
         logger.warning("Cannot refresh token — SSO_ISSUER_URL or SSO_CLIENT_ID not set")
         return access_token
@@ -116,6 +117,7 @@ async def refresh_access_token(
                 data={
                     "grant_type": "refresh_token",
                     "client_id": client_id,
+                    "client_secret": client_secret,
                     "refresh_token": refresh_token,
                 },
             )
@@ -299,10 +301,7 @@ async def get_mcp_tools(
     """
     global _cached_tools, _cached_tools_ts  # noqa: PLW0603
 
-    if (
-        _cached_tools
-        and (time.time() - _cached_tools_ts) < _MCP_TOOL_CACHE_TTL
-    ):
+    if _cached_tools and (time.time() - _cached_tools_ts) < _MCP_TOOL_CACHE_TTL:
         logger.info(
             "MCP tool cache hit (%d tools, %.0fs old)",
             len(_cached_tools),
