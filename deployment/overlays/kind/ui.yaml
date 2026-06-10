@@ -92,7 +92,7 @@ data:
           script_src: ["'self'", "'unsafe-inline'"]
           style_src: ["'self'", "'unsafe-inline'"]
           img_src: ["'self'", "data:", "blob:"]
-          connect_src: ["'self'", "https://auth.redhat.com"]
+          connect_src: ["'self'"]
           font_src: ["'self'"]
           object_src: ["'none'"]
           frame_ancestors: ["'none'"]

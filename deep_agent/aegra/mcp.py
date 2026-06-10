@@ -16,6 +16,7 @@ Functions:
 
 import asyncio
 import base64
+import contextvars
 import json
 import os
 import time
@@ -38,6 +39,47 @@ _mcp_breaker: CircuitBreaker | None = None
 _MCP_TOOL_CACHE_TTL: float = float(agent_config.get_cache_config().mcp.ttl)
 _cached_tools: list[Any] = []
 _cached_tools_ts: float = 0.0
+
+_current_access_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_access_token", default=None
+)
+_current_refresh_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_refresh_token", default=None
+)
+
+
+def set_mcp_auth_context(
+    access_token: str | None,
+    refresh_token: str | None,
+) -> None:
+    """Store the current request's tokens for tool-call-time auth injection.
+
+    Called once per request in the graph factory, before the LLM may invoke
+    any MCP tools. The ``_TokenInjectorInterceptor`` reads these at
+    invocation time to override the cached connection's Authorization header.
+    """
+    _current_access_token.set(access_token)
+    _current_refresh_token.set(refresh_token)
+
+
+class _TokenInjectorInterceptor:
+    """Inject the current request's SSO token into every MCP tool call.
+
+    Reads the access token from the ``_current_access_token`` ContextVar
+    (set per-request by ``set_mcp_auth_context``) and overrides the
+    ``Authorization`` header on the outgoing MCP request. This ensures
+    cached tool objects always use the correct user's token.
+    """
+
+    async def __call__(self, request: Any, handler: Any) -> Any:
+        access = _current_access_token.get()
+        if access:
+            request = request.override(headers={"Authorization": f"Bearer {access}"})
+        else:
+            logger.warning(
+                "TokenInjector: no access token in ContextVar — MCP call will use cached/anonymous auth"
+            )
+        return await handler(request)
 
 
 def _get_mcp_breaker() -> CircuitBreaker:
@@ -199,7 +241,10 @@ async def _connect_single_server(
 
     try:
         async with asyncio.timeout(timeout):
-            client = MultiServerMCPClient({name: config})
+            client = MultiServerMCPClient(
+                {name: config},
+                tool_interceptors=[_TokenInjectorInterceptor()],
+            )
             tools: list[Any] = await client.get_tools()
         logger.info(f"[{name}] loaded {len(tools)} tool(s)")
         breaker.record_success()
