@@ -30,6 +30,7 @@ from deep_agent.src.agent.config.model import (
     infer_provider,
     parse_model_config,
 )
+from deep_agent.src.agent.config.resolver import to_virtual_skill_paths
 from deep_agent.src.cache.model_cache import get_or_create_model_from_spec
 from deep_agent.src.exceptions import LLMError, SubAgentError
 from deep_agent.src.settings import settings
@@ -383,7 +384,7 @@ def _build_default_subagent(
     if resolved_tools:
         subagent_params["tools"] = resolved_tools
     if skill_paths:
-        subagent_params["skills"] = skill_paths
+        subagent_params["skills"] = to_virtual_skill_paths(skill_paths)
     if subagent_middleware:
         subagent_params["middleware"] = subagent_middleware
 
@@ -444,7 +445,7 @@ def _build_compiled_subagent(
         "model": _resolve_subagent_model(agent_cfg),
         "system_prompt": agent_cfg.get("body", ""),
         "tools": resolved_tools or None,
-        "skills": skill_paths or None,
+        "skills": to_virtual_skill_paths(skill_paths) if skill_paths else None,
         "backend": get_configured_backend(),
     }
 
