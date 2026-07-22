@@ -41,28 +41,39 @@ jobs:
             else                  labels.push('size/XL');
 
             if (labels.length > 0) {
-              await github.rest.issues.addLabels({
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.pull_request.number,
+                  labels: labels,
+                });
+              } catch (e) {
+                core.warning(`Could not add labels (org may restrict write permissions for fork PRs): ${e.message}`);
+              }
+            }
+
+            const author = context.payload.pull_request.user.login;
+            try {
+              await github.rest.issues.addAssignees({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.payload.pull_request.number,
-                labels: labels,
+                assignees: [author],
               });
+            } catch (e) {
+              core.warning(`Could not assign author (org may restrict write permissions): ${e.message}`);
             }
-
-            // Assign PR author and request team review
-            const author = context.payload.pull_request.user.login;
-            await github.rest.issues.addAssignees({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              assignees: [author],
-            });
-            await github.rest.pulls.requestReviewers({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-              team_reviewers: ['template-agent-maintainers'],
-            });
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                team_reviewers: ['template-agent-maintainers'],
+              });
+            } catch (e) {
+              core.warning(`Could not request reviewers (org may restrict write permissions): ${e.message}`);
+            }
 
   check-issue-link:
     name: Check Issue Link
@@ -82,12 +93,16 @@ jobs:
             const matches = [...allText.matchAll(issuePattern)];
 
             if (matches.length === 0) {
-              await github.rest.issues.addLabels({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
-                labels: ['needs-issue'],
-              });
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.payload.pull_request.number,
+                  labels: ['needs-issue'],
+                });
+              } catch (e) {
+                core.warning(`Could not add needs-issue label: ${e.message}`);
+              }
               core.setFailed(
                 'This PR does not reference an issue. Link one with "Fixes #123" or "#123" in the PR title or description.'
               );
@@ -118,38 +133,45 @@ jobs:
 
             const BOT_MARKER = '<!-- auto-label-draft-notice -->';
 
-            // Find and delete any previous draft notice comment
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-            });
-            for (const c of comments) {
-              if (c.body.includes(BOT_MARKER)) {
-                await github.rest.issues.deleteComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: c.id,
-                });
+            try {
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+              });
+              for (const c of comments) {
+                if (c.body.includes(BOT_MARKER)) {
+                  await github.rest.issues.deleteComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: c.id,
+                  });
+                }
               }
+            } catch (e) {
+              core.warning(`Could not manage bot comments: ${e.message}`);
             }
 
             if (!authorAssigned) {
               const pr = context.payload.pull_request;
-              if (!pr.draft) {
-                await github.rest.pulls.update({
+              try {
+                if (!pr.draft) {
+                  await github.rest.pulls.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: pr.number,
+                    draft: true,
+                  });
+                }
+                await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
-                  pull_number: pr.number,
-                  draft: true,
+                  issue_number: pr.number,
+                  body: `${BOT_MARKER}\nThis PR was converted to draft because @${prAuthor} is not assigned to any of the linked issues (${issueNumbers.map(n => '#' + n).join(', ')}). Assign yourself to the issue and mark this PR as ready for review.`,
                 });
+              } catch (e) {
+                core.warning(`Could not convert PR to draft or add comment: ${e.message}`);
               }
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: pr.number,
-                body: `${BOT_MARKER}\nThis PR was converted to draft because @${prAuthor} is not assigned to any of the linked issues (${issueNumbers.map(n => '#' + n).join(', ')}). Assign yourself to the issue and mark this PR as ready for review.`,
-              });
               core.setFailed(
                 `PR author @${prAuthor} is not assigned to any of the linked issues (${issueNumbers.map(n => '#' + n).join(', ')}). The issue must be assigned to you before opening a PR.`
               );
