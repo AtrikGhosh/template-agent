@@ -1,0 +1,156 @@
+name: Auto Label
+
+on:
+  pull_request_target:
+    branches: [main, deep-agent]
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  label-pr:
+    name: Label PR
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Label by PR title convention
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const labels = [];
+
+            if (title.startsWith('feat'))     labels.push('feature');
+            if (title.startsWith('fix'))      labels.push('bug');
+            if (title.startsWith('docs'))     labels.push('documentation');
+            if (title.startsWith('chore'))    labels.push('chore');
+            if (title.startsWith('refactor')) labels.push('refactor');
+            if (title.startsWith('test'))     labels.push('testing');
+            if (title.startsWith('ci'))       labels.push('ci');
+            if (title.startsWith('perf'))     labels.push('performance');
+            if (title.includes('!:'))         labels.push('breaking-change');
+
+            const size = context.payload.pull_request.changed_files;
+            if (size <= 5)        labels.push('size/S');
+            else if (size <= 15)  labels.push('size/M');
+            else if (size <= 30)  labels.push('size/L');
+            else                  labels.push('size/XL');
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: labels,
+              });
+            }
+
+            // Assign PR author and request team review
+            const author = context.payload.pull_request.user.login;
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              assignees: [author],
+            });
+            await github.rest.pulls.requestReviewers({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              team_reviewers: ['template-agent-maintainers'],
+            });
+
+  check-issue-link:
+    name: Check Issue Link
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check for linked issue
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const title = context.payload.pull_request.title;
+
+            const issuePattern = /#(\d+)/g;
+            const allText = `${title} ${body}`;
+            const matches = [...allText.matchAll(issuePattern)];
+
+            if (matches.length === 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: ['needs-issue'],
+              });
+              core.setFailed(
+                'This PR does not reference an issue. Link one with "Fixes #123" or "#123" in the PR title or description.'
+              );
+              return;
+            }
+
+            const prAuthor = context.payload.pull_request.user.login;
+            const issueNumbers = [...new Set(matches.map(m => parseInt(m[1])))];
+            let authorAssigned = false;
+
+            for (const num of issueNumbers) {
+              try {
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: num,
+                });
+                if (issue.pull_request) continue;
+                const assignees = issue.assignees.map(a => a.login);
+                if (assignees.includes(prAuthor)) {
+                  authorAssigned = true;
+                  break;
+                }
+              } catch (e) {
+                // Issue not found or cross-repo reference, skip
+              }
+            }
+
+            const BOT_MARKER = '<!-- auto-label-draft-notice -->';
+
+            // Find and delete any previous draft notice comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+            });
+            for (const c of comments) {
+              if (c.body.includes(BOT_MARKER)) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: c.id,
+                });
+              }
+            }
+
+            if (!authorAssigned) {
+              const pr = context.payload.pull_request;
+              if (!pr.draft) {
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                  draft: true,
+                });
+              }
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                body: `${BOT_MARKER}\nThis PR was converted to draft because @${prAuthor} is not assigned to any of the linked issues (${issueNumbers.map(n => '#' + n).join(', ')}). Assign yourself to the issue and mark this PR as ready for review.`,
+              });
+              core.setFailed(
+                `PR author @${prAuthor} is not assigned to any of the linked issues (${issueNumbers.map(n => '#' + n).join(', ')}). The issue must be assigned to you before opening a PR.`
+              );
+            }
