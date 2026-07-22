@@ -3,7 +3,7 @@ name: Auto Label
 on:
   pull_request_target:
     branches: [main, deep-agent]
-    types: [opened, edited, synchronize]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -85,49 +85,70 @@ jobs:
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+            const prAuthor = context.payload.pull_request.user.login;
+
+            // Use the timeline API to find issues linked via the Development sidebar
+            // (closing references like "Fixes #N" or manual links)
+            const timeline = await github.paginate(
+              github.rest.issues.listEventsForTimeline,
+              { owner, repo, issue_number: prNumber, per_page: 100 }
+            );
+
+            const linkedIssueNumbers = [];
+            for (const event of timeline) {
+              if (event.event === 'cross-referenced' && event.source?.issue) {
+                const src = event.source.issue;
+                if (!src.pull_request && src.repository?.full_name === `${owner}/${repo}`) {
+                  linkedIssueNumbers.push(src.number);
+                }
+              }
+              if (event.event === 'connected' || event.event === 'disconnected') {
+                // connected/disconnected don't expose issue number in REST,
+                // so fall back to closing-keyword parsing below
+              }
+            }
+
+            // Also check for closing keywords in PR body as a fallback
             const body = context.payload.pull_request.body || '';
-            const title = context.payload.pull_request.title;
+            const closingPattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+            for (const m of body.matchAll(closingPattern)) {
+              linkedIssueNumbers.push(parseInt(m[1]));
+            }
 
-            const issuePattern = /#(\d+)/g;
-            const allText = `${title} ${body}`;
-            const matches = [...allText.matchAll(issuePattern)];
+            const uniqueIssues = [...new Set(linkedIssueNumbers)];
 
-            if (matches.length === 0) {
+            if (uniqueIssues.length === 0) {
               try {
                 await github.rest.issues.addLabels({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.payload.pull_request.number,
+                  owner, repo, issue_number: prNumber,
                   labels: ['needs-issue'],
                 });
               } catch (e) {
                 core.warning(`Could not add needs-issue label: ${e.message}`);
               }
               core.setFailed(
-                'This PR does not reference an issue. Link one with "Fixes #123" or "#123" in the PR title or description.'
+                'No linked issue found. Use the Development sidebar to link an issue, or add "Fixes #123" to the PR description.'
               );
               return;
             }
 
-            const prAuthor = context.payload.pull_request.user.login;
-            const issueNumbers = [...new Set(matches.map(m => parseInt(m[1])))];
+            // Check that PR author is assigned to at least one linked issue
             let authorAssigned = false;
-
-            for (const num of issueNumbers) {
+            for (const num of uniqueIssues) {
               try {
                 const { data: issue } = await github.rest.issues.get({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: num,
+                  owner, repo, issue_number: num,
                 });
                 if (issue.pull_request) continue;
-                const assignees = issue.assignees.map(a => a.login);
-                if (assignees.includes(prAuthor)) {
+                if (issue.assignees.some(a => a.login === prAuthor)) {
                   authorAssigned = true;
                   break;
                 }
               } catch (e) {
-                // Issue not found or cross-repo reference, skip
+                // Issue not found or inaccessible, skip
               }
             }
 
@@ -135,16 +156,12 @@ jobs:
 
             try {
               const { data: comments } = await github.rest.issues.listComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.payload.pull_request.number,
+                owner, repo, issue_number: prNumber,
               });
               for (const c of comments) {
                 if (c.body.includes(BOT_MARKER)) {
                   await github.rest.issues.deleteComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    comment_id: c.id,
+                    owner, repo, comment_id: c.id,
                   });
                 }
               }
@@ -153,26 +170,21 @@ jobs:
             }
 
             if (!authorAssigned) {
-              const pr = context.payload.pull_request;
+              const issueList = uniqueIssues.map(n => '#' + n).join(', ');
               try {
-                if (!pr.draft) {
+                if (!context.payload.pull_request.draft) {
                   await github.rest.pulls.update({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    pull_number: pr.number,
-                    draft: true,
+                    owner, repo, pull_number: prNumber, draft: true,
                   });
                 }
                 await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: pr.number,
-                  body: `${BOT_MARKER}\nThis PR was converted to draft because @${prAuthor} is not assigned to any of the linked issues (${issueNumbers.map(n => '#' + n).join(', ')}). Assign yourself to the issue and mark this PR as ready for review.`,
+                  owner, repo, issue_number: prNumber,
+                  body: `${BOT_MARKER}\nThis PR was converted to draft because @${prAuthor} is not assigned to any of the linked issues (${issueList}). Assign yourself to the issue and mark this PR as ready for review.`,
                 });
               } catch (e) {
                 core.warning(`Could not convert PR to draft or add comment: ${e.message}`);
               }
               core.setFailed(
-                `PR author @${prAuthor} is not assigned to any of the linked issues (${issueNumbers.map(n => '#' + n).join(', ')}). The issue must be assigned to you before opening a PR.`
+                `PR author @${prAuthor} is not assigned to any linked issues (${issueList}). Assign yourself to the issue first.`
               );
             }
