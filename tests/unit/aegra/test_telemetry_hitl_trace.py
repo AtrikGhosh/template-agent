@@ -395,6 +395,173 @@ class TestHitlAwareCallbackHandler:
         root_obs.end.assert_not_called()
         assert handler._open_hitl_roots["t1"] is root_obs
 
+    def test_store_replace_end_failure_is_swallowed(self, hitl_handler_class):
+        """Replacing a key must continue even if ending the prior obs fails."""
+        handler = hitl_handler_class()
+        first = _mock_root_obs()
+        first.end.side_effect = RuntimeError("end failed")
+        second = _mock_root_obs()
+
+        handler._store_open_hitl_root("t1", first)
+        handler._store_open_hitl_root("t1", second)
+
+        assert handler._open_hitl_roots["t1"] is second
+        first.end.assert_called_once()
+
+    def test_store_evict_end_failure_is_swallowed(self, hitl_handler_class):
+        """LRU eviction must continue even if ending the evicted obs fails."""
+        handler = hitl_handler_class()
+        oldest = _mock_root_obs()
+        oldest.end.side_effect = RuntimeError("end failed")
+        newest = _mock_root_obs()
+
+        with patch.object(telemetry_mod, "_MAX_OPEN_HITL_ROOTS", 1):
+            handler._store_open_hitl_root("t1", oldest)
+            handler._store_open_hitl_root("t2", newest)
+
+        assert "t1" not in handler._open_hitl_roots
+        assert handler._open_hitl_roots["t2"] is newest
+        oldest.end.assert_called_once()
+
+    def test_keep_open_on_chain_end_failure_still_clears_keep_open_set(
+        self, hitl_handler_class
+    ):
+        """keep-open on_chain_end errors must still discard bookkeeping in finally."""
+        pytest.importorskip("langgraph")
+        from langgraph.errors import GraphInterrupt
+
+        handler = hitl_handler_class()
+        root_id, child_id = uuid4(), uuid4()
+        handler._track_run(
+            run_id=root_id, parent_run_id=None, metadata={"thread_id": "t1"}
+        )
+        handler._track_run(
+            run_id=child_id, parent_run_id=root_id, metadata={"thread_id": "t1"}
+        )
+        root_obs = _mock_root_obs()
+        handler._runs[root_id] = root_obs
+
+        handler.on_chain_error(
+            GraphInterrupt(()), run_id=child_id, parent_run_id=root_id
+        )
+        assert root_id in handler._keep_open_root_run_ids
+
+        with patch.object(
+            handler, "_detach_observation", side_effect=RuntimeError("detach boom")
+        ):
+            handler.on_chain_end({"ok": True}, run_id=root_id, parent_run_id=None)
+
+        assert root_id not in handler._keep_open_root_run_ids
+        assert handler._open_hitl_roots["t1"] is root_obs
+
+    def test_stale_open_root_end_failure_is_swallowed(self, hitl_handler_class):
+        """A new user message must proceed even if ending the stale root fails."""
+        handler = hitl_handler_class()
+        stale = _mock_root_obs()
+        stale.end.side_effect = RuntimeError("end failed")
+        handler._open_hitl_roots["t1"] = stale
+
+        with patch.object(
+            handler.__class__.__bases__[0],
+            "on_chain_start",
+            return_value=None,
+        ) as super_start:
+            handler.on_chain_start(
+                {"name": "orchestrator"},
+                {"messages": [{"role": "user", "content": "hi"}]},
+                run_id=uuid4(),
+                parent_run_id=None,
+                metadata={"thread_id": "t1"},
+            )
+            super_start.assert_called_once()
+
+        stale.end.assert_called_once()
+        assert "t1" not in handler._open_hitl_roots
+
+    def test_resume_rebind_failure_end_failure_still_falls_back(
+        self, hitl_handler_class
+    ):
+        """If rebind fails and ending the open root also fails, still call super()."""
+        pytest.importorskip("langgraph")
+        from langgraph.types import Command
+
+        handler = hitl_handler_class()
+        resume_id = uuid4()
+        open_obs = _mock_root_obs()
+        open_obs.end.side_effect = RuntimeError("end failed")
+        handler._open_hitl_roots["t1"] = open_obs
+
+        with (
+            patch.object(
+                handler, "_attach_observation", side_effect=RuntimeError("boom")
+            ),
+            patch.object(
+                handler.__class__.__bases__[0],
+                "on_chain_start",
+                return_value=None,
+            ) as super_start,
+        ):
+            handler.on_chain_start(
+                {"name": "orchestrator"},
+                Command(resume={"decisions": [{"type": "approve"}]}),
+                run_id=resume_id,
+                parent_run_id=None,
+                metadata={"thread_id": "t1"},
+            )
+            super_start.assert_called_once()
+
+        open_obs.end.assert_called_once()
+        assert "t1" not in handler._open_hitl_roots
+
+    def test_keep_open_on_chain_end_when_detach_returns_none(self, hitl_handler_class):
+        """keep-open path must clear state even when there is no span to update."""
+        pytest.importorskip("langgraph")
+        from langgraph.errors import GraphInterrupt
+
+        handler = hitl_handler_class()
+        root_id, child_id = uuid4(), uuid4()
+        handler._track_run(
+            run_id=root_id, parent_run_id=None, metadata={"thread_id": "t1"}
+        )
+        handler._track_run(
+            run_id=child_id, parent_run_id=root_id, metadata={"thread_id": "t1"}
+        )
+        root_obs = _mock_root_obs()
+        handler._runs[root_id] = root_obs
+        handler.on_chain_error(
+            GraphInterrupt(()), run_id=child_id, parent_run_id=root_id
+        )
+
+        with patch.object(handler, "_detach_observation", return_value=None):
+            handler.on_chain_end({}, run_id=root_id, parent_run_id=None)
+
+        assert root_id not in handler._keep_open_root_run_ids
+        assert handler._open_hitl_roots["t1"] is root_obs
+
+    def test_resume_rebind_skips_non_string_trace_id(self, hitl_handler_class):
+        """Non-string observation.trace_id must not overwrite last_trace_id."""
+        pytest.importorskip("langgraph")
+        from langgraph.types import Command
+
+        handler = hitl_handler_class()
+        resume_id = uuid4()
+        open_obs = _mock_root_obs()
+        open_obs.trace_id = 12345  # not a str
+        handler._open_hitl_roots["t1"] = open_obs
+        handler.last_trace_id = "keep-me"
+
+        with patch.object(handler, "_attach_observation"):
+            handler.on_chain_start(
+                {"name": "orchestrator"},
+                Command(resume={"decisions": [{"type": "approve"}]}),
+                run_id=resume_id,
+                parent_run_id=None,
+                metadata={"thread_id": "t1"},
+            )
+
+        assert handler.last_trace_id == "keep-me"
+        assert "t1" not in handler._open_hitl_roots
+
 
 class TestLangfuseObservabilityProviderMetadata:
     def test_includes_thread_id_for_resume_key(self):
@@ -413,3 +580,80 @@ class TestLangfuseObservabilityProviderMetadata:
         assert metadata["langfuse_session_id"] == "thread-abc"
         assert metadata["thread_id"] == "thread-abc"
         assert "langfuse_trace_name" in metadata
+
+    def test_includes_encrypted_user_id_and_trace_tag(self):
+        provider = LangfuseObservabilityProvider()
+        with (
+            patch.object(
+                LangfuseObservabilityProvider,
+                "is_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deep_agent.aegra.telemetry.encrypt_user_id",
+                return_value="hashed-user",
+            ),
+            patch("deep_agent.utils.pylogger._trace_id_var") as trace_var,
+        ):
+            trace_var.get.return_value = "app-trace-1"
+            metadata = provider.get_metadata(
+                run_id="run-1",
+                thread_id="thread-abc",
+                user_identity="user-1",
+            )
+
+        assert metadata["langfuse_user_id"] == "hashed-user"
+        assert metadata["thread_id"] == "thread-abc"
+        assert metadata["langfuse_tags"] == ["trace_id:app-trace-1"]
+
+
+class TestSetupLangfuseSharedHandler:
+    def test_registers_process_wide_hitl_aware_handler(self, monkeypatch):
+        """setup_langfuse_tracing must inject one shared HITL-aware handler."""
+        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+
+        prev_initialized = telemetry_mod._langfuse_tracing_initialized
+        prev_shared = telemetry_mod._shared_langfuse_handler
+        prev_cls = telemetry_mod.HitlAwareCallbackHandler
+        telemetry_mod._langfuse_tracing_initialized = False
+        telemetry_mod._shared_langfuse_handler = None
+        telemetry_mod.HitlAwareCallbackHandler = None
+
+        register = MagicMock()
+        manager = MagicMock()
+
+        try:
+            with (
+                patch(
+                    "langchain_core.tracers.context.register_configure_hook",
+                    register,
+                ),
+                patch(
+                    "deep_agent.src.pii.get_scrubber",
+                    return_value=None,
+                ),
+                patch(
+                    "aegra_api.observability.base.get_observability_manager",
+                    return_value=manager,
+                ),
+            ):
+                telemetry_mod.setup_langfuse_tracing()
+
+            assert telemetry_mod.HitlAwareCallbackHandler is not None
+            assert telemetry_mod._shared_langfuse_handler is not None
+            assert isinstance(
+                telemetry_mod._shared_langfuse_handler,
+                telemetry_mod.HitlAwareCallbackHandler,
+            )
+            register.assert_called_once()
+            # ContextVar default must be the shared handler (no per-run factory).
+            ctx_var = register.call_args.args[0]
+            assert ctx_var.get() is telemetry_mod._shared_langfuse_handler
+            assert register.call_args.args[1] is True
+            assert len(register.call_args.args) == 2
+            manager.register_provider.assert_called_once()
+        finally:
+            telemetry_mod._langfuse_tracing_initialized = prev_initialized
+            telemetry_mod._shared_langfuse_handler = prev_shared
+            telemetry_mod.HitlAwareCallbackHandler = prev_cls
