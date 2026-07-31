@@ -1,13 +1,14 @@
-"""Container entrypoint — validates config mount before starting the agent.
+"""Container entrypoint — validates config mount and starts the agent.
+
+Starts the HTTP API server via uvicorn.
 
 Expected directory structure at ``CONFIG_PATH`` (default ``/app/config/agent``):
 
   - PROMPT.md
   - mcp.json
-  - skills/
-  - subagents/
-  - runtime/ (optional)
-  - deployment/ (optional)
+  - runtime/agent.yaml
+  - skills/ (optional)
+  - subagents/ (optional)
 """
 
 from __future__ import annotations
@@ -64,8 +65,8 @@ def validate_config_mount() -> None:
         print(f"WARNING: Could not read mcp.json: {e}", file=sys.stderr)
 
 
-def start_agent() -> None:
-    """Start the agent runtime after config validation."""
+def start_server() -> None:
+    """Start the HTTP API server."""
     import uvicorn
     from aegra_api.main import app
 
@@ -81,9 +82,9 @@ def start_agent() -> None:
 
 
 def main() -> None:
-    """Validate config mount and start the agent server."""
+    """Validate config mount and start the server."""
     validate_config_mount()
-    start_agent()
+    start_server()
 
 
 if __name__ == "__main__":
