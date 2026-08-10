@@ -39,9 +39,21 @@ def serialize_message(msg: BaseMessage) -> dict[str, Any]:
     if isinstance(msg, ToolMessage):
         data["tool_call_id"] = msg.tool_call_id
         data["name"] = getattr(msg, "name", None)
+        artifact = getattr(msg, "artifact", None)
+        if artifact is not None:
+            data["artifact"] = _safe_serialize(artifact)
+        from deep_agent.aegra.mcp_apps import extract_mcp_app_from_message
+
+        mcp_app = extract_mcp_app_from_message(msg)
+        if mcp_app is not None:
+            data["mcpApp"] = _safe_serialize(mcp_app)
 
     if msg.response_metadata:
         data["response_metadata"] = _safe_serialize(msg.response_metadata)
+
+    additional_kwargs = getattr(msg, "additional_kwargs", None)
+    if additional_kwargs:
+        data["additional_kwargs"] = _safe_serialize(additional_kwargs)
 
     return data
 
@@ -62,12 +74,20 @@ def deserialize_message(data: dict[str, Any]) -> BaseMessage:
     elif msg_type == "system":
         return SystemMessage(content=content, id=msg_id)
     elif msg_type == "tool":
-        return ToolMessage(
-            content=content,
-            tool_call_id=data.get("tool_call_id", ""),
-            name=data.get("name"),
-            id=msg_id,
-        )
+        tool_kwargs: dict[str, Any] = {
+            "content": content,
+            "tool_call_id": data.get("tool_call_id", ""),
+            "name": data.get("name"),
+            "id": msg_id,
+        }
+        if "artifact" in data:
+            tool_kwargs["artifact"] = data["artifact"]
+        additional_kwargs = data.get("additional_kwargs")
+        if isinstance(additional_kwargs, dict):
+            tool_kwargs["additional_kwargs"] = additional_kwargs
+        elif "mcpApp" in data:
+            tool_kwargs["additional_kwargs"] = {"mcpApp": data["mcpApp"]}
+        return ToolMessage(**tool_kwargs)
     else:
         return HumanMessage(content=content, id=msg_id)
 
