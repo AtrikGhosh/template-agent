@@ -44,6 +44,7 @@ async def run_startup() -> dict[str, str]:
     results["config"] = await _validate_config()
     results["database"] = await _ensure_database()
     _check_mcp_encryption_key()
+    results["mcp_apps"] = _setup_mcp_apps_capability()
     results["cache"] = await _warm_caches()
     results["scheduler"] = await _start_scheduler()
     results["otel"] = _setup_otel()
@@ -102,6 +103,18 @@ def _check_mcp_encryption_key() -> None:
             )
     except Exception:
         logger.debug("MCP encryption key check skipped", exc_info=True)
+
+
+def _setup_mcp_apps_capability() -> str:
+    """Ensure MCP initialize advertises the Apps UI extension (SEP-1865)."""
+    try:
+        from deep_agent.aegra.mcp_apps import ensure_mcp_apps_capability_advertised
+
+        newly_installed = ensure_mcp_apps_capability_advertised()
+        return "ok" if newly_installed else "already_installed"
+    except Exception as exc:
+        logger.error("MCP Apps capability setup failed: %s", exc)
+        return f"error: {exc}"
 
 
 async def _ensure_database() -> str:

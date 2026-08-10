@@ -52,6 +52,30 @@ class TestSerializeMessage:
         assert result["tool_call_id"] == "tc1"
         assert result["name"] == "search"
 
+    def test_tool_message_preserves_artifact_and_mcp_app(self):
+        msg = ToolMessage(
+            content="ok",
+            tool_call_id="tc1",
+            name="show_chart",
+            id="t1",
+            artifact={
+                "structured_content": {"n": 1},
+                "mcp_app": {
+                    "server": "chart-mcp-server",
+                    "resourceUri": "ui://charts/app.html",
+                    "result": {
+                        "content": [{"type": "text", "text": "ok"}],
+                        "structuredContent": {"n": 1},
+                        "isError": False,
+                    },
+                },
+            },
+        )
+        result = serialize_message(msg)
+        assert result["artifact"]["structured_content"]["n"] == 1
+        assert result["mcpApp"]["resourceUri"] == "ui://charts/app.html"
+        assert result["mcpApp"]["server"] == "chart-mcp-server"
+
     def test_system_message(self):
         msg = SystemMessage(content="you are helpful")
         result = serialize_message(msg)
