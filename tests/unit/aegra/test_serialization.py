@@ -128,6 +128,34 @@ class TestDeserializeMessage:
         assert isinstance(msg, ToolMessage)
         assert msg.tool_call_id == "tc1"
 
+    def test_tool_message_with_artifact(self):
+        data = {
+            "type": "tool",
+            "content": "ok",
+            "tool_call_id": "tc1",
+            "name": "show",
+            "artifact": {"structured_content": {"n": 1}},
+        }
+        msg = deserialize_message(data)
+        assert isinstance(msg, ToolMessage)
+        assert msg.artifact["structured_content"]["n"] == 1
+
+    def test_tool_message_mcp_app_without_artifact(self):
+        data = {
+            "type": "tool",
+            "content": "ok",
+            "tool_call_id": "tc1",
+            "name": "show",
+            "mcpApp": {
+                "server": "srv",
+                "resourceUri": "ui://x",
+                "result": {"content": [], "isError": False},
+            },
+        }
+        msg = deserialize_message(data)
+        assert isinstance(msg, ToolMessage)
+        assert msg.additional_kwargs["mcpApp"]["resourceUri"] == "ui://x"
+
     def test_unknown_type_defaults_to_human(self):
         data = {"type": "unknown_type", "content": "fallback"}
         msg = deserialize_message(data)

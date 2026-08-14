@@ -350,6 +350,88 @@ class TestToolUiMetaAndVisibility:
         assert app_result["content"][1]["type"] == "audio"
         assert app_result["content"][1]["mimeType"] == "audio/wav"
 
+    @pytest.mark.asyncio
+    async def test_interceptor_ignores_non_call_tool_result(self):
+        async def handler(_request):
+            return {"not": "a CallToolResult"}
+
+        interceptor = McpAppCallToolResultInterceptor()
+        out = await interceptor(SimpleNamespace(name="x"), handler)
+        assert out == {"not": "a CallToolResult"}
+        assert take_captured_call_tool_result() is None
+
+    def test_serialize_handles_dict_and_plain_blocks(self):
+        class _Meta:
+            def model_dump(self, **_kwargs):
+                return {"k": 1}
+
+        result = SimpleNamespace(
+            content=[
+                {"type": "text", "text": "dict-block"},
+                42,
+            ],
+            isError=False,
+            structuredContent={"ok": True},
+            meta=_Meta(),
+        )
+        serialized = serialize_call_tool_result_for_app(result)
+        assert serialized["content"][0] == {"type": "text", "text": "dict-block"}
+        assert serialized["content"][1] == {"type": "text", "text": "42"}
+        assert serialized["structuredContent"] == {"ok": True}
+        assert serialized["_meta"] == {"k": 1}
+
+    def test_attach_non_tuple_uses_content_blocks(self):
+        descriptor = {
+            "server": "srv",
+            "resourceUri": "ui://x",
+            "toolName": "show",
+            "visibility": ["model", "app"],
+        }
+        _content, artifact = attach_mcp_app_to_tool_result(
+            "hello",
+            descriptor,
+        )
+        assert _content == "hello"
+        assert artifact["mcp_app"]["result"]["content"] == [
+            {"type": "text", "text": "hello"}
+        ]
+
+    def test_attach_list_content_without_mcp_result(self):
+        descriptor = {
+            "server": "srv",
+            "resourceUri": "ui://x",
+            "toolName": "show",
+            "visibility": ["app"],
+        }
+        _content, artifact = attach_mcp_app_to_tool_result(
+            ([{"type": "text", "text": "a"}], {"structuredContent": {"n": 2}}),
+            descriptor,
+        )
+        assert artifact["mcp_app"]["result"]["structuredContent"] == {"n": 2}
+
+    def test_extract_mcp_app_from_additional_kwargs(self):
+        from langchain_core.messages import ToolMessage
+
+        msg = ToolMessage(
+            content="ok",
+            tool_call_id="tc1",
+            name="show",
+            additional_kwargs={
+                "mcpApp": {
+                    "server": "srv",
+                    "resourceUri": "ui://from-kwargs",
+                    "result": {"content": [], "isError": False},
+                }
+            },
+        )
+        assert extract_mcp_app_from_message(msg)["resourceUri"] == "ui://from-kwargs"
+
+    def test_extract_mcp_app_returns_none_without_payload(self):
+        from langchain_core.messages import ToolMessage
+
+        msg = ToolMessage(content="ok", tool_call_id="tc1", name="show")
+        assert extract_mcp_app_from_message(msg) is None
+
     def test_serialize_call_tool_result_for_app(self):
         serialized = serialize_call_tool_result_for_app(
             types.CallToolResult(
