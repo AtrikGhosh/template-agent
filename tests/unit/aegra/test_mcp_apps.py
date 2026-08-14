@@ -463,13 +463,10 @@ class TestToolUiMetaAndVisibility:
 class TestEnsureMcpAppsCapabilityAdvertised:
     def test_install_is_idempotent(self):
         # Module import of deep_agent.aegra.mcp may already have installed the patch.
-        first = ensure_mcp_apps_capability_advertised()
+        ensure_mcp_apps_capability_advertised()
         second = ensure_mcp_apps_capability_advertised()
         assert second is False
         assert mcp_apps._patch_installed is True
-        # At least one of the calls left the patch installed; if this test
-        # process had not imported mcp.py yet, first would be True.
-        assert first in (True, False)
         assert ClientSession.initialize is mcp_apps._initialize_with_mcp_apps
 
     @pytest.mark.asyncio

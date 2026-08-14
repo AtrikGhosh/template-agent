@@ -280,9 +280,10 @@ def _check_mcp_encryption_key() -> None:
     """Warn if any MCP server uses oauth/dcr but MCP_TOKEN_ENCRYPTION_KEY is not set."""
     try:
         from deep_agent.src.agent.config import agent_config
+        from deep_agent.src.settings import settings
 
         servers = agent_config.get_mcp_servers()
-        dcr_enabled = os.environ.get("MCP_DCR_ENABLED", "true").lower() == "true"
+        dcr_enabled = settings.MCP_DCR_ENABLED
         check_modes = {"oauth", "dcr"} if dcr_enabled else {"oauth"}
         needs_key = any(
             s.get("auth_mode") in check_modes

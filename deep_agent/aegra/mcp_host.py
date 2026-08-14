@@ -7,6 +7,7 @@ in process memory for multi-pod safety.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -28,6 +29,9 @@ from deep_agent.aegra.mcp_apps import (
 from deep_agent.utils.pylogger import get_python_logger
 
 logger = get_python_logger()
+
+# Cap tools/list pagination when resolving a tool by name (host tools/call).
+_MAX_TOOLS_LIST_PAGES = 20
 
 
 def _tool_from_mcp_meta(name: str, meta: dict[str, Any] | None) -> SimpleNamespace:
@@ -112,14 +116,16 @@ async def mcp_session(
     )
     config = _build_server_config(entry, bearer)
     client = MultiServerMCPClient({mcp_name: config})
-    async with client.session(mcp_name) as session:
-        yield session
+    timeout = float(entry.get("timeout", 30))
+    async with asyncio.timeout(timeout):
+        async with client.session(mcp_name) as session:
+            yield session
 
 
 async def _find_mcp_tool(session: Any, tool_name: str) -> Any | None:
     """Find a tool by name using paginated tools/list (live server, not cache)."""
     cursor: str | None = None
-    while True:
+    for _ in range(_MAX_TOOLS_LIST_PAGES):
         page = await session.list_tools(cursor=cursor)
         for tool in page.tools or []:
             if tool.name == tool_name:
@@ -127,6 +133,7 @@ async def _find_mcp_tool(session: Any, tool_name: str) -> Any | None:
         cursor = page.nextCursor
         if not cursor:
             return None
+    return None
 
 
 async def list_tools(

@@ -992,7 +992,7 @@ class TestRouteWiring:
             response = await mcp_routes.mcp_connect("charts", request)
 
         assert response.status_code == 200
-        mock_connect.assert_awaited_once_with("user-1", "charts")
+        mock_connect.assert_awaited_once_with("user-1", "charts", caller_origin=None)
 
     @pytest.mark.asyncio
     async def test_mcp_status_route(self):
@@ -1304,3 +1304,17 @@ class TestListToolsAndFindTool:
             )
         )
         assert await _find_mcp_tool(session, "missing") is None
+
+    @pytest.mark.asyncio
+    async def test_find_mcp_tool_stops_after_max_pages(self):
+        from deep_agent.aegra import mcp_host
+
+        endless = types.ListToolsResult(
+            tools=[types.Tool(name="other", inputSchema={"type": "object"})],
+            nextCursor="again",
+        )
+        session = MagicMock()
+        session.list_tools = AsyncMock(return_value=endless)
+
+        assert await _find_mcp_tool(session, "missing") is None
+        assert session.list_tools.await_count == mcp_host._MAX_TOOLS_LIST_PAGES
