@@ -1,6 +1,7 @@
 """Unit tests for schema models."""
 
 import pytest
+from pydantic import ValidationError
 
 from deep_agent.src.schema import (
     ChatHistoryResponse,
@@ -114,13 +115,13 @@ class TestChatHistoryResponse:
 
 class TestProjectModels:
     def test_create_requires_name(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ProjectCreate()
 
     def test_create_strips_and_rejects_blank_name(self):
         body = ProjectCreate(project_name="  Alpha  ")
         assert body.project_name == "Alpha"
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ProjectCreate(project_name="   ")
 
     def test_update_strips_name(self):

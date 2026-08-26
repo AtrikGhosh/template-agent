@@ -592,20 +592,19 @@ class TestAssignAndOwnership:
         ):
             ids = await repo.delete_project_with_threads("p1", "u1")
         assert ids == ["t1"]
-        predicate = [
-            str(call.args[0])
-            for call in mock_conn.execute.await_args_list
-            if "DELETE FROM thread" in str(call.args[0])
-            and "project_id" in str(call.args[0])
+        pred = next(
+            c
+            for c in mock_conn.execute.await_args_list
+            if "DELETE FROM thread" in str(c.args[0]) and "project_id" in str(c.args[0])
+        )
+        assert pred.args[1] == ("p1", "u1")
+        per_id = [
+            c.args[1]
+            for c in mock_conn.execute.await_args_list
+            if "DELETE FROM thread" in str(c.args[0])
+            and "project_id" not in str(c.args[0])
         ]
-        assert predicate
-        purged_by_id = [
-            call.args[1]
-            for call in mock_conn.execute.await_args_list
-            if "DELETE FROM thread" in str(call.args[0])
-            and "project_id" not in str(call.args[0])
-        ]
-        assert ("t2", "u1") not in purged_by_id
+        assert all(args[0] == "t1" for args in per_id)
 
     @pytest.mark.asyncio
     async def test_hard_delete_does_not_purge_thread_already_moved_out(
@@ -651,13 +650,19 @@ class TestAssignAndOwnership:
         ):
             ids = await repo.delete_project_with_threads("p1", "u1")
         assert ids == ["t-kept"]
-        purged_by_id = [
-            call.args[1]
-            for call in mock_conn.execute.await_args_list
-            if "DELETE FROM thread" in str(call.args[0])
-            and "project_id" not in str(call.args[0])
+        pred = next(
+            c
+            for c in mock_conn.execute.await_args_list
+            if "DELETE FROM thread" in str(c.args[0]) and "project_id" in str(c.args[0])
+        )
+        assert pred.args[1] == ("p1", "u1")
+        per_id = [
+            c.args[1]
+            for c in mock_conn.execute.await_args_list
+            if "DELETE FROM thread" in str(c.args[0])
+            and "project_id" not in str(c.args[0])
         ]
-        assert ("t-moved", "u1") not in purged_by_id
+        assert all(args[0] == "t-kept" for args in per_id)
 
     @pytest.mark.asyncio
     async def test_delete_keep_threads_unassigns_without_purging_threads(
