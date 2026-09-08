@@ -154,6 +154,11 @@ def _inherit_from_orchestrator(
             )
             agent_cfg["mcps"] = list(parent_mcps)
 
+    if "resources" not in agent_cfg:
+        parent_resources = orchestrator_cfg.get("resources")
+        if parent_resources is not None:
+            agent_cfg["resources"] = list(parent_resources)
+
 
 def _normalize_model_to_dict(
     raw_model: Any,
@@ -385,7 +390,7 @@ def _append_mcp_resource_tools(
     extra = wrap_mcp_tools_for_auth(
         get_mcp_resource_tools(
             server_names=agent_cfg.get("mcps") or None,
-            allowed_uris=(agent_cfg["resources"] if "resources" in agent_cfg else None),
+            allowed_uris=agent_cfg.get("resources") or None,
         )
     )
     if not extra:

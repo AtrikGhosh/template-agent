@@ -1357,9 +1357,7 @@ class TestMcpResourceToolsOnSubagents:
             server_names=["keep-me"], allowed_uris=["template://about"]
         )
 
-    def test_default_omits_resource_tools_when_resources_empty(
-        self, _no_mcp_resource_tools
-    ):
+    def test_default_resources_empty_allows_all(self, _no_mcp_resource_tools):
         mock_tool = MagicMock()
         mock_settings = MagicMock()
         mock_settings.GUARDIAN_API_BASE = ""
@@ -1408,7 +1406,56 @@ class TestMcpResourceToolsOnSubagents:
 
         assert mock_sa.call_args.kwargs["tools"] == [mock_tool]
         _no_mcp_resource_tools.assert_called_once_with(
-            server_names=None, allowed_uris=[]
+            server_names=None, allowed_uris=None
+        )
+
+    def test_default_inherits_orchestrator_resources(self, _no_mcp_resource_tools):
+        mock_settings = MagicMock()
+        mock_settings.GUARDIAN_API_BASE = ""
+
+        with (
+            patch(
+                "deep_agent.src.infrastructure.subagents.agent_config.get_all_subagent_configs",
+                return_value={
+                    "analyst": {
+                        "name": "analyst",
+                        "model": "gemini-2.5-flash",
+                        "description": "Analyst",
+                        "body": "Prompt",
+                        "tools": ["calculate_bmi"],
+                    }
+                },
+            ),
+            patch(
+                "deep_agent.src.infrastructure.subagents.agent_config.get_orchestrator_config",
+                return_value={"resources": ["template://about"]},
+            ),
+            patch(
+                "deep_agent.src.infrastructure.subagents.agent_config.resolve_tools",
+                return_value=[MagicMock()],
+            ),
+            patch(
+                "deep_agent.src.infrastructure.subagents.get_or_create_model_from_spec",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deep_agent.src.infrastructure.subagents.SubAgent",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "deep_agent.src.infrastructure.subagents.build_audit_middleware",
+                return_value=None,
+            ),
+            patch("deep_agent.src.settings.settings", mock_settings),
+            patch(
+                "deep_agent.src.infrastructure.subagents.build_opa_middleware",
+                return_value=None,
+            ),
+        ):
+            load_subagents(tools=[])
+
+        _no_mcp_resource_tools.assert_called_once_with(
+            server_names=None, allowed_uris=["template://about"]
         )
 
     def test_compiled_explicit_tools_still_gets_resource_tools(

@@ -499,6 +499,27 @@ class TestGraphHelpers:
         fp2 = _graph_fingerprint("model", "prompt", ["b", "a"])
         assert fp1 == fp2
 
+    def test_graph_fingerprint_includes_mcps_and_resources(self):
+        from deep_agent.aegra.graph import _graph_fingerprint
+
+        base = dict(model_name="model", system_prompt="prompt", tool_names=["t"])
+        fp_none = _graph_fingerprint(**base)
+        fp_empty = _graph_fingerprint(**base, mcp_names=[], resource_uris=[])
+        fp_mcps = _graph_fingerprint(**base, mcp_names=["keep-me"])
+        fp_resources = _graph_fingerprint(**base, resource_uris=["template://about"])
+        fp_resources_order = _graph_fingerprint(
+            **base, resource_uris=["template://echo/{text}", "template://about"]
+        )
+        fp_resources_order_rev = _graph_fingerprint(
+            **base, resource_uris=["template://about", "template://echo/{text}"]
+        )
+
+        assert fp_none == fp_empty
+        assert fp_mcps != fp_none
+        assert fp_resources != fp_none
+        assert fp_resources != fp_mcps
+        assert fp_resources_order == fp_resources_order_rev
+
     def test_invalidate_graph_cache_clears_caches(self):
         import time
 
@@ -721,7 +742,7 @@ class TestGraphCacheHit:
         assert mock_subs.call_args.kwargs["tools"] == []
 
     @pytest.mark.asyncio
-    async def test_omits_resource_tools_when_resources_empty_list(self):
+    async def test_resources_empty_list_allows_all(self):
         from deep_agent.aegra.mcp_resource_tools import LIST_TOOL
 
         mock_config = self._mock_orch_config(resources=[])
@@ -734,9 +755,7 @@ class TestGraphCacheHit:
         )
 
         names = [t.name for t in mock_create.call_args.kwargs["tools"]]
-        assert LIST_TOOL not in names
-        mw_names = mock_mw.call_args.kwargs["mcp_tool_names"]
-        assert LIST_TOOL not in mw_names
+        assert LIST_TOOL in names
 
     @pytest.mark.asyncio
     async def test_resource_tools_honor_declared_mcps(self):
@@ -755,6 +774,27 @@ class TestGraphCacheHit:
         mock_build.assert_called_once()
         assert mock_build.call_args.kwargs["allowed_servers"] == ["keep-me"]
         assert mock_build.call_args.kwargs["allowed_uris"] is None
+
+    @pytest.mark.asyncio
+    async def test_resource_tools_honor_declared_resources(self):
+        mock_config = self._mock_orch_config(
+            resources=["template://about", "template://echo/{text}"]
+        )
+        mock_config.get_mcp_servers.return_value = {
+            "template-mcp-server": {"enabled": True},
+        }
+
+        with patch(
+            "deep_agent.aegra.mcp_resource_tools.build_mcp_resource_tools",
+            return_value=[],
+        ) as mock_build:
+            await self._build_agent(mock_config)
+
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["allowed_uris"] == [
+            "template://about",
+            "template://echo/{text}",
+        ]
 
 
 class TestGuardianActivationGate:
