@@ -140,6 +140,7 @@ async def agent(runtime: ServerRuntime) -> Any:
         refresh_access_token,
         set_mcp_auth_context,
     )
+    from deep_agent.aegra.mcp_resource_tools import get_mcp_resource_tools
     from deep_agent.aegra.mcp_tool_auth import wrap_mcp_tools_for_auth
     from deep_agent.src.agent.config import agent_config
     from deep_agent.src.infrastructure.async_tasks import build_async_middleware
@@ -271,6 +272,18 @@ async def agent(runtime: ServerRuntime) -> Any:
             )
             tools.extend(extra)
 
+    resource_tools = wrap_mcp_tools_for_auth(
+        get_mcp_resource_tools(
+            server_names=mcp_server_names or None,
+            allowed_uris=(
+                orchestrator_cfg["resources"]
+                if "resources" in orchestrator_cfg
+                else None
+            ),
+        )
+    )
+    tools.extend(resource_tools)
+
     from deep_agent.src.infrastructure.middleware import (
         build_middleware_list,
         resolve_memory_param,
@@ -310,7 +323,8 @@ async def agent(runtime: ServerRuntime) -> Any:
         resolved_mw,
         model=model,
         backend=backend,
-        mcp_tool_names=frozenset(t.name for t in mcp_tools),
+        mcp_tool_names=frozenset(t.name for t in mcp_tools)
+        | frozenset(t.name for t in resource_tools),
     )
     memory = resolve_memory_param(resolved_mw)
     if skill_paths and resolved_mw.skills_enabled:
