@@ -107,6 +107,11 @@ class _TokenInjectorInterceptor:
             if auth_mode in ("oauth", "dcr"):
                 if not user_id:
                     if _mcp_tool_discovery.get():
+                        logger.info(
+                            "[%s] no user_id during %s tool discovery — proceeding unauthenticated",
+                            self._mcp_name,
+                            auth_mode,
+                        )
                         access = None
                     else:
                         raise NeedsAuthorization(
@@ -120,6 +125,12 @@ class _TokenInjectorInterceptor:
                         )
                     except NeedsAuthorization:
                         if _mcp_tool_discovery.get():
+                            logger.info(
+                                "[%s] NeedsAuthorization during %s tool discovery "
+                                "— proceeding unauthenticated (will create placeholder)",
+                                self._mcp_name,
+                                auth_mode,
+                            )
                             access = None
                         else:
                             raise
@@ -211,28 +222,36 @@ async def refresh_access_token(
 
     token_url: str = _get_token_endpoint()
     client_id: str = os.environ.get("SSO_CLIENT_ID", "")
-    client_secret: str = os.environ.get("SSO_CLIENT_SECRET", "")
+    client_secret: str = os.environ.get("SSO_CLIENT_SECRET", "")  # noqa: F841
     if not token_url or not client_id:
         logger.warning("Cannot refresh token — SSO_ISSUER_URL or SSO_CLIENT_ID not set")
         return access_token
 
     logger.info("Refreshing SSO access token (%.0fs remaining)", remaining)
     try:
-        async with httpx.AsyncClient() as client:
-            resp: httpx.Response = await client.post(
-                token_url,
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": refresh_token,
-                },
-            )
-            resp.raise_for_status()
-            new_token: str = resp.json()["access_token"]
-            new_remaining: float = _jwt_exp(new_token) - time.time()
-            logger.info("SSO token refreshed (%.0fs lifetime)", new_remaining)
-            return new_token
+        from deep_agent.aegra.auth import EVAL_TOKEN_REFRESH_ENABLED, _oidc_refresh
+
+        new_token, new_rt = await _oidc_refresh(refresh_token)
+        new_remaining: float = _jwt_exp(new_token) - time.time()
+        logger.info("SSO token refreshed (%.0fs lifetime)", new_remaining)
+
+        _current_access_token.set(new_token)
+        if new_rt != refresh_token:
+            _current_refresh_token.set(new_rt)
+            if EVAL_TOKEN_REFRESH_ENABLED:
+                sub = _current_user_id.get()
+                if sub:
+                    from deep_agent.aegra.mcp_crypto import encrypt_secret
+                    from deep_agent.aegra.redis import cache_get, cache_set
+
+                    if await asyncio.to_thread(cache_get, f"eval:active:{sub}"):
+                        encrypted_rt = encrypt_secret(new_rt)
+                        if encrypted_rt:
+                            await asyncio.to_thread(
+                                cache_set, f"eval:refresh:{sub}", encrypted_rt, 3600
+                            )
+
+        return new_token
     except Exception:
         logger.error("Token refresh failed — using original token", exc_info=True)
         return access_token
@@ -298,6 +317,10 @@ async def _resolve_connection_token(
     try:
         return await get_mcp_credential_resolver().resolve(user_id, name, entry)
     except NeedsAuthorization:
+        logger.info(
+            "[%s] no usable OAuth token during connection token resolution",
+            name,
+        )
         return None
 
 
@@ -384,6 +407,11 @@ def _create_auth_placeholder_tool(
                 # A leftover refresh token must not skip re-auth after refresh fails.
                 await resolver.resolve(user_id, mcp_name, cfg)
                 invalidate_mcp_tool_cache(user_id)
+                logger.info(
+                    "[%s] placeholder tool resolved auth — "
+                    "tool cache invalidated, rebuild on next request",
+                    mcp_name,
+                )
                 return (
                     f"Successfully connected to {mcp_name}. "
                     f"The tools are now available — please ask the user to "
@@ -392,7 +420,12 @@ def _create_auth_placeholder_tool(
             except NeedsAuthorization:
                 raise
             except Exception:
-                pass
+                logger.warning(
+                    "[%s] placeholder tool auth resolve failed "
+                    "— falling through to NeedsAuthorization",
+                    mcp_name,
+                    exc_info=True,
+                )
 
         raise NeedsAuthorization(
             mcp_name,
@@ -490,8 +523,10 @@ async def _connect_single_server(
         except Exception as exc:
             if _is_needs_authorization(exc):
                 logger.info(
-                    "[%s] MCP OAuth required — returning auth placeholder tool",
+                    "[%s] MCP OAuth required — returning auth placeholder tool (%s: %s)",
                     name,
+                    type(exc).__name__,
+                    exc,
                 )
                 return prepare_tools_for_model(
                     [_create_auth_placeholder_tool(auth_key, server_cfg)],
@@ -501,8 +536,12 @@ async def _connect_single_server(
                 auth_mode = server_cfg.get("auth_mode", "sso")
                 if auth_mode in ("oauth", "dcr"):
                     logger.info(
-                        "[%s] MCP tool discovery auth failed — returning auth placeholder tool",
+                        "[%s] MCP tool discovery auth failed (auth_mode=%s) "
+                        "— returning auth placeholder tool (%s: %s)",
                         name,
+                        auth_mode,
+                        type(exc).__name__,
+                        exc,
                     )
                     return prepare_tools_for_model(
                         [_create_auth_placeholder_tool(auth_key, server_cfg)],
@@ -745,7 +784,7 @@ async def get_mcp_tools(
     if cache_key is not None:
         _cached_tools[cache_key] = tools
         _cached_tools_ts[cache_key] = time.time()
-    logger.warning(
+    logger.info(
         "Loaded %d MCP tool(s): %s (cached for %.0fs, user=%s)",
         len(tools),
         ", ".join(seen),
