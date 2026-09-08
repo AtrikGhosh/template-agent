@@ -1,8 +1,9 @@
 """Host-side LangChain tools that call MCP ``resources/*`` (not server tools).
 
 The model cannot speak JSON-RPC. These tools are the host adapter: they open the
-same request-scoped MCP session as the Apps HTTP proxy, then return the payload
-unchanged. No catalog cache — safe for multi-pod.
+same request-scoped MCP session as the Apps HTTP proxy. List/templates return
+the catalog JSON unchanged. Read returns text contents and replaces binary
+blobs with a short omitted notice. No catalog cache — safe for multi-pod.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from deep_agent.aegra.mcp_host import (
 LIST_TOOL = "mcp_list_resources"
 TEMPLATES_TOOL = "mcp_list_resource_templates"
 READ_TOOL = "mcp_read_resource"
+BLOB_OMITTED = "Resource in blob format, omitted"
 
 
 def get_mcp_resource_tools(
@@ -107,6 +109,33 @@ def _raise_or_format_http(exc: HTTPException) -> str:
 
 def _dump(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _omit_blobs(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop MCP ``blob`` bytes so they never enter the model context.
+
+    Future: attach as ``content_blocks`` when the current model can ingest the
+    MIME type; otherwise write to thread files and let the model ``read_file``.
+    """
+    contents = payload.get("contents")
+    if not isinstance(contents, list):
+        return payload
+    out_contents: list[Any] = []
+    changed = False
+    for item in contents:
+        if not isinstance(item, dict) or "blob" not in item:
+            out_contents.append(item)
+            continue
+        changed = True
+        stub = {k: v for k, v in item.items() if k != "blob"}
+        if "text" not in stub:
+            stub["text"] = BLOB_OMITTED
+        out_contents.append(stub)
+    if not changed:
+        return payload
+    out = dict(payload)
+    out["contents"] = out_contents
+    return out
 
 
 def _filter_resources(
@@ -229,19 +258,23 @@ def build_mcp_resource_tools(
             return _raise_or_format_http(exc)
         except Exception as exc:
             return f"MCP resource request failed: {exc}"
-        return _dump(payload)
+        return _dump(_omit_blobs(payload))
 
     list_desc = (
-        "List MCP resources (resources/list). Returns catalog metadata, not file "
-        "contents. If the list is empty, call mcp_list_resource_templates. "
+        "List MCP resources (resources/list). Returns catalog metadata for concrete "
+        "URIs, not file contents. Also call mcp_list_resource_templates when listing "
+        "what resources are available. "
         f"mcp_name must be one of: {server_list}."
     )
     templates_desc = (
-        "List MCP resource templates (resources/templates/list) for parameterized "
-        f"URIs. mcp_name must be one of: {server_list}."
+        "List MCP resource templates (resources/templates/list). These are URI "
+        "patterns with {param} placeholders, not readable files. Fill a pattern "
+        "then call mcp_read_resource. "
+        f"mcp_name must be one of: {server_list}."
     )
     read_desc = (
         "Read an MCP resource (resources/read) by URI. Use after listing. "
+        "Binary blob contents are omitted. "
         f"mcp_name must be one of: {server_list}."
     )
 
