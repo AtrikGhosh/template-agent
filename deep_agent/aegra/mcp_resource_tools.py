@@ -2,8 +2,10 @@
 
 The model cannot speak JSON-RPC. These tools are the host adapter: they open the
 same request-scoped MCP session as the Apps HTTP proxy. List/templates return
-the catalog JSON unchanged. Read returns text contents and replaces binary
-blobs with a short omitted notice. No catalog cache — safe for multi-pod.
+the catalog JSON unchanged. Read extracts ``contents[].text``, applies
+line-based ``offset``/``limit`` pagination (defaults match ``read_file``:
+offset 0, limit 100), then char-truncates to the eviction token budget.
+Binary blobs are omitted. No catalog cache — safe for multi-pod.
 """
 
 from __future__ import annotations
@@ -29,11 +31,123 @@ from deep_agent.aegra.mcp_host import (
     list_resources,
     read_resource,
 )
+from deep_agent.utils.pylogger import get_python_logger
+
+logger = get_python_logger()
 
 LIST_TOOL = "mcp_list_resources"
 TEMPLATES_TOOL = "mcp_list_resource_templates"
 READ_TOOL = "mcp_read_resource"
-BLOB_OMITTED = "Resource in blob format, omitted"
+
+DEFAULT_READ_OFFSET = 0
+DEFAULT_READ_LIMIT = 100
+_CHARS_PER_TOKEN = 4
+_DEFAULT_TOKEN_LIMIT = 100_000
+
+
+def _get_max_chars() -> int:
+    """Return the char budget for resource reads.
+
+    Independent of FilesystemMiddleware's eviction threshold — resource
+    reads have their own budget sized to fit large guidance documents.
+    """
+    return _CHARS_PER_TOKEN * _DEFAULT_TOKEN_LIMIT
+
+
+def _extract_text(payload: dict[str, Any]) -> str:
+    """Join ``contents[].text`` from an MCP ``resources/read`` result.
+
+    Blob-only items are replaced with a stub so the model knows binary
+    content was present but omitted.
+    """
+    contents = payload.get("contents")
+    if not isinstance(contents, list):
+        return ""
+    parts: list[str] = []
+    for item in contents:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+        elif "blob" in item:
+            mime = item.get("mimeType") or item.get("mime_type") or "unknown"
+            parts.append(f"[Binary content omitted ({mime})]")
+    return "\n".join(parts)
+
+
+def _split_long_lines(lines: list[str], max_chars: int) -> list[str]:
+    r"""Break any line longer than *max_chars* into chunks so every line is pageable.
+
+    Each chunk ends with ``\\n`` so the downstream line-boundary logic works.
+    """
+    chunk_size = max(max_chars - 1, 1)
+    out: list[str] = []
+    for line in lines:
+        while len(line) > max_chars:
+            out.append(line[:chunk_size] + "\n")
+            line = line[chunk_size:]
+        out.append(line)
+    return out
+
+
+def _paginate_text(
+    text: str, uri: str, *, offset: int, limit: int, max_chars: int
+) -> str:
+    """Slice *text* by line offset/limit, then char-truncate to *max_chars*.
+
+    Long lines are pre-split into chunks so every line fits within the
+    char budget. ``next_offset`` is derived from lines actually shown,
+    not from the requested ``limit``, so no lines are skipped on resume.
+    """
+    lines = _split_long_lines(text.splitlines(keepends=True), max_chars)
+    total_lines = len(lines)
+    offset = max(offset, 0)
+    limit = max(limit, 1)
+    page = lines[offset : offset + limit]
+    result = "".join(page)
+
+    if not result and offset > 0:
+        return (
+            f"[No content at offset={offset}. "
+            f"Resource {uri} has {total_lines} lines (offsets 0–{max(total_lines - 1, 0)}).]"
+        )
+
+    truncated_by_lines = offset + limit < total_lines
+    truncated_by_chars = False
+
+    if len(result) > max_chars:
+        cut = result[:max_chars]
+        last_nl = cut.rfind("\n")
+        if last_nl >= 0:
+            result = cut[: last_nl + 1]
+            lines_shown = result.count("\n")
+        else:
+            result = cut
+            lines_shown = 0
+        truncated_by_chars = True
+
+    if truncated_by_chars and lines_shown > 0:
+        next_offset = offset + lines_shown
+    elif truncated_by_lines:
+        next_offset = offset + limit
+    else:
+        next_offset = None
+
+    if next_offset is not None:
+        notice = (
+            f"\n\n[Output truncated. Resource {uri} has {total_lines} lines. "
+            f"Use offset={next_offset} and limit={limit} to read the next page.]"
+        )
+        result += notice
+    elif truncated_by_chars:
+        result += (
+            "\n\n[Output truncated due to size limits. "
+            "The resource content is very large. "
+            "Consider requesting a smaller portion or a different URI.]"
+        )
+
+    return result
 
 
 def get_mcp_resource_tools(
@@ -62,7 +176,7 @@ def get_mcp_resource_tools(
 
 def _uri_allowed(uri: str, allowed_uris: list[str] | None) -> bool:
     """Return True if *uri* is unrestricted, listed, or matches a listed template."""
-    if allowed_uris is None:
+    if not allowed_uris:
         return True
     if uri in allowed_uris:
         return True
@@ -107,41 +221,22 @@ def _raise_or_format_http(exc: HTTPException) -> str:
     return f"MCP resource request failed ({exc.status_code}): {exc.detail}"
 
 
+def _format_generic_failure(exc: BaseException) -> str:
+    """Return a stable tool error; do not forward raw exception text to the model."""
+    if isinstance(exc, TimeoutError):
+        return "MCP resource request failed: timed out"
+    logger.exception("MCP resource request failed")
+    return "MCP resource request failed"
+
+
 def _dump(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False)
-
-
-def _omit_blobs(payload: dict[str, Any]) -> dict[str, Any]:
-    """Drop MCP ``blob`` bytes so they never enter the model context.
-
-    Future: attach as ``content_blocks`` when the current model can ingest the
-    MIME type; otherwise write to thread files and let the model ``read_file``.
-    """
-    contents = payload.get("contents")
-    if not isinstance(contents, list):
-        return payload
-    out_contents: list[Any] = []
-    changed = False
-    for item in contents:
-        if not isinstance(item, dict) or "blob" not in item:
-            out_contents.append(item)
-            continue
-        changed = True
-        stub = {k: v for k, v in item.items() if k != "blob"}
-        if "text" not in stub:
-            stub["text"] = BLOB_OMITTED
-        out_contents.append(stub)
-    if not changed:
-        return payload
-    out = dict(payload)
-    out["contents"] = out_contents
-    return out
 
 
 def _filter_resources(
     payload: dict[str, Any], allowed_uris: list[str] | None
 ) -> dict[str, Any]:
-    if allowed_uris is None:
+    if not allowed_uris:
         return payload
     out = dict(payload)
     out["resources"] = [
@@ -156,7 +251,7 @@ def _filter_resources(
 def _filter_templates(
     payload: dict[str, Any], allowed_uris: list[str] | None
 ) -> dict[str, Any]:
-    if allowed_uris is None:
+    if not allowed_uris:
         return payload
     key = (
         "resourceTemplates" if "resourceTemplates" in payload else "resource_templates"
@@ -182,17 +277,19 @@ def build_mcp_resource_tools(
     allowed_servers: list[str],
     allowed_uris: list[str] | None = None,
 ) -> list[Any]:
-    """Return list/templates/read tools, or ``[]`` when nothing is allowed.
+    """Return list/templates/read tools, or ``[]`` when no servers are available.
 
     Args:
         allowed_servers: MCP ``mcp.json`` keys this agent may call.
-        allowed_uris: ``None`` = all URIs; ``[]`` = no tools; otherwise allowlist
-            of concrete URIs and ``uriTemplate`` strings.
+        allowed_uris: ``None`` = all URIs; non-empty list = allowlist.
+            Production callers normalize ``[]`` to ``None`` (falsy = unrestricted,
+            matching ``mcps:`` and ``tools:`` behavior).
     """
     servers = tuple(s for s in allowed_servers if s)
-    if not servers or allowed_uris == []:
+    if not servers:
         return []
 
+    max_chars = _get_max_chars()
     server_list = ", ".join(servers)
 
     class _ListInput(BaseModel):
@@ -211,6 +308,14 @@ def build_mcp_resource_tools(
         uri: str = PydanticField(
             description="Resource URI from resources/list or a template"
         )
+        offset: int = PydanticField(
+            default=DEFAULT_READ_OFFSET,
+            description="Line offset (0-indexed). Use for pagination of large resources.",
+        )
+        limit: int = PydanticField(
+            default=DEFAULT_READ_LIMIT,
+            description="Max lines to return. Default 100. Pass a higher value for large resources.",
+        )
 
     async def _list(mcp_name: str, cursor: str | None = None) -> str:
         if mcp_name not in servers:
@@ -225,7 +330,7 @@ def build_mcp_resource_tools(
         except HTTPException as exc:
             return _raise_or_format_http(exc)
         except Exception as exc:
-            return f"MCP resource request failed: {exc}"
+            return _format_generic_failure(exc)
         return _dump(_filter_resources(payload, allowed_uris))
 
     async def _templates(mcp_name: str, cursor: str | None = None) -> str:
@@ -241,10 +346,15 @@ def build_mcp_resource_tools(
         except HTTPException as exc:
             return _raise_or_format_http(exc)
         except Exception as exc:
-            return f"MCP resource request failed: {exc}"
+            return _format_generic_failure(exc)
         return _dump(_filter_templates(payload, allowed_uris))
 
-    async def _read(mcp_name: str, uri: str) -> str:
+    async def _read(
+        mcp_name: str,
+        uri: str,
+        offset: int = DEFAULT_READ_OFFSET,
+        limit: int = DEFAULT_READ_LIMIT,
+    ) -> str:
         if mcp_name not in servers:
             return _reject_server(mcp_name, servers)
         if not _uri_allowed(uri, allowed_uris):
@@ -257,8 +367,11 @@ def build_mcp_resource_tools(
         except HTTPException as exc:
             return _raise_or_format_http(exc)
         except Exception as exc:
-            return f"MCP resource request failed: {exc}"
-        return _dump(_omit_blobs(payload))
+            return _format_generic_failure(exc)
+        text = _extract_text(payload)
+        return _paginate_text(
+            text, uri, offset=offset, limit=limit, max_chars=max_chars
+        )
 
     list_desc = (
         "List MCP resources (resources/list). Returns catalog metadata for concrete "
@@ -274,6 +387,8 @@ def build_mcp_resource_tools(
     )
     read_desc = (
         "Read an MCP resource (resources/read) by URI. Use after listing. "
+        "By default reads up to 100 lines starting from the beginning. "
+        "Use offset/limit to page through large resources. "
         "Binary blob contents are omitted. "
         f"mcp_name must be one of: {server_list}."
     )

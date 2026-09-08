@@ -226,7 +226,7 @@ Orchestrator.
         assert orch["resources"] == ["template://about", "template://echo/{text}"]
 
     def test_orchestrator_empty_resources_list(self, tmp_path):
-        """Explicit empty list is valid (allow none), distinct from omit."""
+        """Loader preserves empty list; wiring normalizes to unrestricted (same as omit)."""
         config_dir = tmp_path / "agent_config"
         config_dir.mkdir()
         (config_dir / "skills").mkdir()
