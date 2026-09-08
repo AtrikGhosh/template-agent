@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from deep_agent.aegra.mcp import _current_access_token, _current_user_id
 from deep_agent.aegra.mcp_auth import NeedsAuthorization
 from deep_agent.aegra.mcp_resource_tools import (
+    BLOB_OMITTED,
     LIST_TOOL,
     READ_TOOL,
     TEMPLATES_TOOL,
@@ -113,6 +114,7 @@ class TestBuildMcpResourceTools:
             allowed_uris=None,
         )
         assert [t.name for t in tools] == [LIST_TOOL, TEMPLATES_TOOL, READ_TOOL]
+        assert "omitted" in _tool(tools, READ_TOOL).description
 
 
 class TestListResourcesTool:
@@ -231,9 +233,9 @@ class TestListTemplatesTool:
 
 class TestReadResourceTool:
     @pytest.mark.asyncio
-    async def test_returns_full_text_and_blob(self, auth_ctx):
+    async def test_keeps_text_and_stubs_blob(self, auth_ctx):
         tools = build_mcp_resource_tools(allowed_servers=["s"], allowed_uris=None)
-        blob = "a" * 20_000
+        blob = "cG5nLWJ5dGVz"
         payload = {
             "contents": [
                 {"uri": "template://about", "mimeType": "text/plain", "text": "hello"},
@@ -253,7 +255,52 @@ class TestReadResourceTool:
         )
         parsed = json.loads(result)
         assert parsed["contents"][0]["text"] == "hello"
-        assert parsed["contents"][1]["blob"] == blob
+        logo = parsed["contents"][1]
+        assert "blob" not in logo
+        assert logo["text"] == BLOB_OMITTED
+        assert blob not in result
+
+    @pytest.mark.asyncio
+    async def test_text_only_is_unchanged(self, auth_ctx):
+        tools = build_mcp_resource_tools(allowed_servers=["s"], allowed_uris=None)
+        payload = {
+            "contents": [
+                {"uri": "template://about", "mimeType": "text/plain", "text": "hello"}
+            ]
+        }
+        with patch(
+            "deep_agent.aegra.mcp_resource_tools.read_resource",
+            new_callable=AsyncMock,
+            return_value=payload,
+        ):
+            result = await _tool(tools, READ_TOOL).ainvoke(
+                {"mcp_name": "s", "uri": "template://about"}
+            )
+        assert json.loads(result) == payload
+
+    @pytest.mark.asyncio
+    async def test_keeps_text_when_same_item_has_blob(self, auth_ctx):
+        tools = build_mcp_resource_tools(allowed_servers=["s"], allowed_uris=None)
+        with patch(
+            "deep_agent.aegra.mcp_resource_tools.read_resource",
+            new_callable=AsyncMock,
+            return_value={
+                "contents": [
+                    {
+                        "uri": "template://both",
+                        "mimeType": "text/plain",
+                        "text": "caption",
+                        "blob": "eA==",
+                    }
+                ]
+            },
+        ):
+            result = await _tool(tools, READ_TOOL).ainvoke(
+                {"mcp_name": "s", "uri": "template://both"}
+            )
+        item = json.loads(result)["contents"][0]
+        assert item["text"] == "caption"
+        assert "blob" not in item
 
     @pytest.mark.asyncio
     async def test_rejects_uri_not_on_allowlist(self, auth_ctx):
