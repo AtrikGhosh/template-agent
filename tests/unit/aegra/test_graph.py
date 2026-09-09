@@ -747,19 +747,19 @@ class TestGraphCacheHit:
 
     @pytest.mark.asyncio
     async def test_resources_empty_list_allows_all(self):
-        from deep_agent.aegra.mcp_resource_tools import LIST_TOOL
-
         mock_config = self._mock_orch_config(resources=[])
         mock_config.get_mcp_servers.return_value = {
             "template-mcp-server": {"enabled": True},
         }
 
-        _result, _compiled, mock_create, mock_mw, _subs = await self._build_agent(
-            mock_config
-        )
+        with patch(
+            "deep_agent.aegra.mcp_resource_tools.build_mcp_resource_tools",
+            return_value=[],
+        ) as mock_build:
+            await self._build_agent(mock_config)
 
-        names = [t.name for t in mock_create.call_args.kwargs["tools"]]
-        assert LIST_TOOL in names
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["allowed_uris"] is None
 
     @pytest.mark.asyncio
     async def test_resource_tools_honor_declared_mcps(self):

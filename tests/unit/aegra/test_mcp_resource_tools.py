@@ -114,6 +114,9 @@ class TestBuildMcpResourceTools:
         )
         assert [t.name for t in tools] == [LIST_TOOL, TEMPLATES_TOOL, READ_TOOL]
         assert "omitted" in _tool(tools, READ_TOOL).description
+        for t in tools:
+            assert t.func is None
+            assert t.coroutine is not None
 
 
 class TestListResourcesTool:
@@ -468,8 +471,10 @@ class TestReadResourceTool:
         assert "offset=" in result
         offset_val = int(result.split("offset=")[1].split(" ")[0].rstrip(","))
         assert offset_val < 100
-        assert "short-0" in result
-        assert f"short-{offset_val}" not in content_before_notice
+        assert offset_val >= 50
+        assert "short-0" in content_before_notice
+        assert "short-49" in content_before_notice
+        assert f"long-{offset_val - 50}-" not in content_before_notice
 
     @pytest.mark.asyncio
     async def test_negative_limit_clamped_to_1(self, auth_ctx):

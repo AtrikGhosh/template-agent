@@ -397,21 +397,18 @@ def build_mcp_resource_tools(
         StructuredTool(
             name=LIST_TOOL,
             description=list_desc,
-            func=lambda **_: "",
             coroutine=_list,
             args_schema=_ListInput,
         ),
         StructuredTool(
             name=TEMPLATES_TOOL,
             description=templates_desc,
-            func=lambda **_: "",
             coroutine=_templates,
             args_schema=_ListInput,
         ),
         StructuredTool(
             name=READ_TOOL,
             description=read_desc,
-            func=lambda **_: "",
             coroutine=_read,
             args_schema=_ReadInput,
         ),
