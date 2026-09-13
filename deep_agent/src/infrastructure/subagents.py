@@ -350,6 +350,9 @@ def _subagent_middleware(
     if datetime_mw is not None:
         middleware.append(datetime_mw)
     middleware.extend(fallback_mw)
+    from deep_agent.aegra.mcp_runtime_tools import build_mcp_runtime_tools_middleware
+
+    middleware.append(build_mcp_runtime_tools_middleware())
     return middleware or None
 
 
@@ -431,6 +434,10 @@ def _resolve_and_enforce_subagent_tools(
     tool_names: list[str] | None = agent_cfg.get("tools")
     mcp_names: list[str] = agent_cfg.get("mcps", [])
     scoped_tools = _filter_tools_by_mcp_names(tools, mcp_names)
+
+    if tool_names:
+        from deep_agent.aegra.mcp import rewrite_oauth_dcr_tool_names
+        tool_names = rewrite_oauth_dcr_tool_names(tool_names)
 
     resolved_tools, manifest = resolve_capability_manifest(
         tool_names, scoped_tools, mcp_names, agent_name=name

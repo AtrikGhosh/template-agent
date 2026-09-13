@@ -23,6 +23,13 @@ logger = get_python_logger()
 _profiles_registered: bool = False
 
 
+def _mcp_runtime_extra_middleware() -> list[Any]:
+    """Harness extra_middleware so the general-purpose subagent gets runtime DCR tools."""
+    from deep_agent.aegra.mcp_runtime_tools import build_mcp_runtime_tools_middleware
+
+    return [build_mcp_runtime_tools_middleware()]
+
+
 def register_profiles_from_config(config: ProvidersFileConfig) -> None:
     """Register ProviderProfile and HarnessProfile instances from config.
 
@@ -145,6 +152,7 @@ def _register_harness_profiles(config: ProvidersFileConfig) -> None:
                 system_prompt_suffix=harness_cfg.system_prompt_suffix or None,
                 excluded_tools=frozenset(harness_cfg.excluded_tools),
                 excluded_middleware=frozenset(harness_cfg.excluded_middleware),
+                extra_middleware=_mcp_runtime_extra_middleware,
                 general_purpose_subagent=gp_profile,
             )
             register_harness_profile(model_key, profile)

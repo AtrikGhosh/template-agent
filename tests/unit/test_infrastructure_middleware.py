@@ -45,12 +45,17 @@ class TestBuildMiddlewareList:
         ) as mock_settings:
             mock_settings.MIDDLEWARE_ENABLED = False
             result = build_middleware_list(resolved)
-        # GeminiSafetyLogMiddleware + UserIdentityMiddleware + CurrentDatetimeMiddleware + ImageSanitizeMiddleware always included
-        assert len(result) == 4
+
+        from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
+
+        
+        # Safety + identity + datetime + image sanitize + runtime DCR tools.
+        assert len(result) == 5
         assert type(result[0]).__name__ == "GeminiSafetyLogMiddleware"
         assert type(result[1]).__name__ == "UserIdentityMiddleware"
         assert type(result[2]).__name__ == "CurrentDatetimeMiddleware"
         assert type(result[3]).__name__ == "ImageSanitizeMiddleware"
+        assert isinstance(result[4], McpRuntimeToolsMiddleware)
 
     def test_includes_summarization_tool_when_enabled(self):
         resolved = ResolvedMiddlewareConfig(summarization_tool_enabled=True)
@@ -79,8 +84,8 @@ class TestBuildMiddlewareList:
             mock_settings.MIDDLEWARE_ENABLED = True
             result = build_middleware_list(resolved)
             build_sum.assert_not_called()
-        # Default guardrails (model/tool limits + model retry) + safety + identity + datetime + image sanitize.
-        assert len(result) == 7
+        # Default guardrails + safety + identity + datetime + image sanitize + runtime DCR tools.
+        assert len(result) == 8
 
     def test_includes_extra_middleware(self):
         resolved = ResolvedMiddlewareConfig(
@@ -94,7 +99,7 @@ class TestBuildMiddlewareList:
         ) as mock_settings:
             mock_settings.MIDDLEWARE_ENABLED = True
             result = build_middleware_list(resolved)
-        assert len(result) == 8
+        assert len(result) == 9
         assert any(isinstance(m, _DummyMiddleware) for m in result)
 
 

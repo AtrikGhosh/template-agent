@@ -268,6 +268,7 @@ async def agent(runtime: ServerRuntime) -> Any:
     from deep_agent.aegra.mcp import (
         get_mcp_tools,
         refresh_access_token,
+        rewrite_oauth_dcr_tool_names,
         set_mcp_auth_context,
     )
     from deep_agent.aegra.mcp_resource_tools import get_mcp_resource_tools
@@ -380,14 +381,18 @@ async def agent(runtime: ServerRuntime) -> Any:
     mcp_tools = wrap_mcp_tools_for_auth(mcp_tools)
 
     all_available_tools = list(mcp_tools)
-
     from deep_agent.src.capability import (
         enforce_capability,
         resolve_capability_manifest,
     )
-
+    manifest_tool_names = (
+        rewrite_oauth_dcr_tool_names(tool_names) if tool_names else tool_names
+    )
     tools, capability_manifest = resolve_capability_manifest(
-        tool_names, all_available_tools, mcp_server_names, agent_name=agent_name
+        manifest_tool_names,
+        all_available_tools,
+        mcp_server_names,
+        agent_name=agent_name,
     )
 
     resource_tools = wrap_mcp_tools_for_auth(

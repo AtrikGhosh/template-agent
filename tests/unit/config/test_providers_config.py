@@ -189,6 +189,9 @@ class TestRegisterProfiles:
         mock_gp_cls.assert_called_once_with(
             enabled=False, description=None, system_prompt=None
         )
+        kwargs = mock_hp_cls.call_args.kwargs
+        assert "extra_middleware" in kwargs
+        assert callable(kwargs["extra_middleware"])
 
 
 class TestAsyncMiddleware:
