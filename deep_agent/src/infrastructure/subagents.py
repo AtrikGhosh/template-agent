@@ -342,6 +342,9 @@ def _subagent_middleware(
     if opa_mw is not None:
         middleware.append(opa_mw)
     middleware.extend(fallback_mw)
+    from deep_agent.aegra.mcp_runtime_tools import build_mcp_runtime_tools_middleware
+
+    middleware.append(build_mcp_runtime_tools_middleware())
     return middleware or None
 
 
@@ -418,8 +421,10 @@ def _build_default_subagent(
     mcp_names: list[str] = agent_cfg.get("mcps", [])
 
     if tool_names:
+        from deep_agent.aegra.mcp import rewrite_oauth_dcr_tool_names
+
         resolved_tools: list[Any] = agent_config.resolve_tools(
-            tool_names, tools, agent_name=name
+            rewrite_oauth_dcr_tool_names(tool_names), tools, agent_name=name
         )
     elif mcp_names and tools:
         logger.info(
@@ -497,8 +502,10 @@ def _build_compiled_subagent(
     mcp_names: list[str] = agent_cfg.get("mcps", [])
 
     if tool_names:
+        from deep_agent.aegra.mcp import rewrite_oauth_dcr_tool_names
+
         resolved_tools: list[Any] = agent_config.resolve_tools(
-            tool_names, tools, agent_name=name
+            rewrite_oauth_dcr_tool_names(tool_names), tools, agent_name=name
         )
     elif mcp_names and tools:
         logger.info(

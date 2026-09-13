@@ -25,12 +25,15 @@ class TestSubagentMiddleware:
             ),
         ):
             result = _subagent_middleware("researcher", [tool], [])
+        from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
+
         assert result is not None
         assert isinstance(result[0], AuditMiddleware)
         assert result[0]._agent == "researcher"
         assert "mcp_search" in result[0]._mcp_tool_names
+        assert any(isinstance(m, McpRuntimeToolsMiddleware) for m in result)
 
-    def test_returns_none_when_audit_and_opa_disabled_and_no_fallback(self):
+    def test_includes_runtime_tools_when_audit_and_opa_disabled(self):
         with (
             patch(
                 "deep_agent.src.infrastructure.subagents.build_audit_middleware",
@@ -41,7 +44,11 @@ class TestSubagentMiddleware:
                 return_value=None,
             ),
         ):
-            assert _subagent_middleware("researcher", [], []) is None
+            from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
+
+            result = _subagent_middleware("researcher", [], [])
+            assert len(result) == 1
+            assert isinstance(result[0], McpRuntimeToolsMiddleware)
 
     def test_includes_opa_when_enabled(self):
         opa_mw = MagicMock(name="OPAMiddleware")
@@ -56,7 +63,10 @@ class TestSubagentMiddleware:
             ),
         ):
             result = _subagent_middleware("researcher", [], [])
-        assert result == [opa_mw]
+        from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
+
+        assert result[0] is opa_mw
+        assert isinstance(result[-1], McpRuntimeToolsMiddleware)
 
     def test_fallback_only_when_audit_disabled(self):
         fallback = MagicMock()
@@ -71,4 +81,7 @@ class TestSubagentMiddleware:
             ),
         ):
             result = _subagent_middleware("researcher", [], [fallback])
-        assert result == [fallback]
+        from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
+
+        assert result[0] is fallback
+        assert isinstance(result[-1], McpRuntimeToolsMiddleware)

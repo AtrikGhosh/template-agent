@@ -4,9 +4,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
 from deep_agent.src.agent.config.model import ModelSpec, Provider
 from deep_agent.src.exceptions import SubAgentError
 from deep_agent.src.infrastructure.subagents import VALID_AGENT_TYPES, load_subagents
+
+
+def _assert_default_subagent_call(mock_sa: MagicMock, **expected: object) -> None:
+    kwargs = mock_sa.call_args.kwargs
+    for key, value in expected.items():
+        assert kwargs[key] == value
+    assert any(isinstance(m, McpRuntimeToolsMiddleware) for m in kwargs["middleware"])
 
 
 @pytest.fixture(autouse=True)
@@ -107,8 +115,8 @@ class TestLoadSubagents:
 
             assert result == [mock_subagent]
             mock_create_model.assert_called_once()
-            # Should be called without middleware when no fallback
-            mock_sa.assert_called_once_with(
+            _assert_default_subagent_call(
+                mock_sa,
                 name="analyst",
                 model=mock_model,
                 description="Test analyst",
@@ -169,7 +177,8 @@ class TestLoadSubagents:
             mock_resolve_tools.assert_called_once_with(
                 ["calculate_bmi", "search_web"], available_tools, agent_name="analyst"
             )
-            mock_sa.assert_called_once_with(
+            _assert_default_subagent_call(
+                mock_sa,
                 name="analyst",
                 model=mock_model,
                 description="Analyst",
@@ -218,7 +227,8 @@ class TestLoadSubagents:
             result = load_subagents(tools=[])
 
             assert result == [mock_subagent]
-            mock_sa.assert_called_once_with(
+            _assert_default_subagent_call(
+                mock_sa,
                 name="analyst",
                 model=mock_model,
                 description="Analyst",
@@ -314,8 +324,8 @@ class TestLoadSubagents:
 
             assert result == [mock_subagent]
             mock_resolve_tools.assert_not_called()
-            # SubAgent should be called without tools parameter
-            mock_sa.assert_called_once_with(
+            _assert_default_subagent_call(
+                mock_sa,
                 name="analyst",
                 model=mock_model,
                 description="Analyst",
@@ -362,7 +372,8 @@ class TestLoadSubagents:
             result = load_subagents(tools=[])
 
             assert result == [mock_subagent]
-            mock_sa.assert_called_once_with(
+            _assert_default_subagent_call(
+                mock_sa,
                 name="analyst",
                 model=mock_model,
                 description="",

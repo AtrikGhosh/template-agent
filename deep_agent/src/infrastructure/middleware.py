@@ -189,6 +189,10 @@ def build_middleware_list(
     if safety_mw is not None:
         middlewares.append(safety_mw)
 
+    from deep_agent.aegra.mcp_runtime_tools import build_mcp_runtime_tools_middleware
+
+    middlewares.append(build_mcp_runtime_tools_middleware())
+
     if not settings.MIDDLEWARE_ENABLED:
         logger.info("Middleware disabled via MIDDLEWARE_ENABLED=false")
         return middlewares
