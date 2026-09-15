@@ -1086,6 +1086,9 @@ async def get_authenticated_oauth_mcp_tools(
         return []
 
     now = time.time()
+    for key, (ts, _) in list(_oauth_live_tools.items()):
+        if now - ts >= _OAUTH_LIVE_TOOLS_TTL:
+            _oauth_live_tools.pop(key, None)
     collected: list[Any] = []
     connect_jobs: list[Any] = []
     connect_keys: list[str] = []
