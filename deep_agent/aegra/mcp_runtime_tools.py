@@ -14,7 +14,7 @@ understands, so an in-tools-node interrupt cannot replay sibling MCP calls.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from typing import Any
 
 from langchain.agents.middleware.types import (
@@ -75,12 +75,23 @@ def _runtime_hitl_required(tool_name: str) -> bool:
     return hitl.mode == "all"
 
 
-def _is_live_oauth_dcr_name(name: str) -> bool:
+def _is_live_oauth_dcr_name(
+    name: str,
+    scope: list[str] | frozenset[str] | None = None,
+) -> bool:
     from deep_agent.aegra.mcp import oauth_dcr_server_for_tool_name
 
     if not name or name.startswith("mcp__"):
         return False
-    return oauth_dcr_server_for_tool_name(name) is not None
+    return oauth_dcr_server_for_tool_name(name, scope=scope) is not None
+
+
+def _live_mcp_server(tool: Any) -> str | None:
+    metadata = getattr(tool, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    server = metadata.get("mcp_server")
+    return server if isinstance(server, str) and server else None
 
 
 def _hitl_payload_for_calls(calls: list[Any]) -> dict[str, Any]:
@@ -112,12 +123,36 @@ def _interrupt_hitl(payload: dict[str, Any]) -> Any:
     return raw
 
 
+_compiled_hitl_auth_resume_installed = False
+
+
+def install_compiled_hitl_auth_resume() -> None:
+    """Make compiled HITL ignore Authenticate's ``continue`` resume.
+
+    LangChain HITL does ``interrupt(...)["decisions"]``. After Connect, that
+    ``interrupt`` still returns ``"continue"``, which crashes. One retry
+    pauses for a real Approve, matching :func:`_interrupt_hitl`.
+    """
+    global _compiled_hitl_auth_resume_installed  # noqa: PLW0603
+    if _compiled_hitl_auth_resume_installed:
+        return
+    import langchain.agents.middleware.human_in_the_loop as hitl_mod
+
+    hitl_mod.interrupt = _interrupt_hitl
+    _compiled_hitl_auth_resume_installed = True
+
+
 def _decision_at(raw: Any, index: int) -> dict[str, Any]:
+    missing = {"type": "reject", "message": "Missing HITL decision."}
     if not isinstance(raw, dict):
-        return {"type": "approve"}
+        return missing
     decisions = raw.get("decisions") or []
-    decision = decisions[index] if index < len(decisions) else {"type": "approve"}
-    return decision if isinstance(decision, dict) else {"type": "approve"}
+    if index >= len(decisions):
+        return missing
+    decision = decisions[index]
+    if not isinstance(decision, dict) or not decision.get("type"):
+        return missing
+    return decision
 
 
 def _apply_live_hitl_decisions(
@@ -188,6 +223,24 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
 
     name = "McpRuntimeToolsMiddleware"
 
+    def __init__(
+        self,
+        *,
+        allowed_tool_names: Collection[str] | None = None,
+        mcp_names: Collection[str] | None = None,
+    ) -> None:
+        """Store the yaml live-name allowlist and MCP server fence."""
+        super().__init__()
+        self._allowlist = (
+            None if allowed_tool_names is None else frozenset(allowed_tool_names)
+        )
+        self._mcp_names = None if mcp_names is None else frozenset(mcp_names)
+
+    def _allowed(self, name: str) -> bool:
+        if self._allowlist is None:
+            return True
+        return name in self._allowlist
+
     def _placeholder_server_names(self, tools: list[Any]) -> list[str]:
         from deep_agent.aegra.mcp import _get_server_configs, placeholder_tool_name
 
@@ -197,6 +250,8 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
             if not cfg.get("enabled", False):
                 continue
             if cfg.get("auth_mode") not in ("oauth", "dcr"):
+                continue
+            if self._mcp_names is not None and key not in self._mcp_names:
                 continue
             if placeholder_tool_name(key) in bound:
                 names.append(key)
@@ -247,6 +302,7 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
             _current_user_id,
             _resolve_mcp_user_id,
             get_authenticated_oauth_mcp_tools,
+            oauth_dcr_server_for_tool_name,
         )
 
         user_id = _resolve_mcp_user_id()
@@ -271,10 +327,27 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
             return await handler(request)
 
         existing = {getattr(t, "name", "") for t in request.tools or []}
-        extra = [t for t in live if getattr(t, "name", "") not in existing]
-        if not extra:
+        extra = [
+            t
+            for t in live
+            if getattr(t, "name", "") not in existing
+            and self._allowed(str(getattr(t, "name", "") or ""))
+        ]
+        bound = list(request.tools or [])
+        scope = None if self._mcp_names is None else self._mcp_names
+        live_servers = {
+            server for tool in (*bound, *extra) if (server := _live_mcp_server(tool))
+        }
+        shown = []
+        for tool in bound:
+            name = str(getattr(tool, "name", "") or "")
+            owner = oauth_dcr_server_for_tool_name(name, scope=scope)
+            if name.startswith("mcp__") and owner in live_servers:
+                continue
+            shown.append(tool)
+        if not extra and len(shown) == len(bound):
             return await handler(request)
-        return await handler(request.override(tools=[*request.tools, *extra]))
+        return await handler(request.override(tools=[*shown, *extra]))
 
     async def aafter_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         """Pause for Connect and HITL before any live OAuth/DCR tool in the batch runs."""
@@ -297,12 +370,17 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
         tool_calls = list(last_ai.tool_calls)
         server_keys: list[str] = []
         live_indices: list[int] = []
+        scope = None if self._mcp_names is None else self._mcp_names
         for idx, call in enumerate(tool_calls):
             name, _ = _tool_call_name_and_id(call)
-            key = oauth_dcr_server_for_tool_name(name)
-            if key:
-                server_keys.append(key)
-            if _is_live_oauth_dcr_name(name) and _runtime_hitl_required(name):
+            key = oauth_dcr_server_for_tool_name(name, scope=scope)
+            if not key:
+                continue
+            is_live = _is_live_oauth_dcr_name(name, scope=scope)
+            if is_live and not self._allowed(name):
+                continue
+            server_keys.append(key)
+            if is_live and _runtime_hitl_required(name):
                 live_indices.append(idx)
 
         user_id = _resolve_mcp_user_id()
@@ -332,11 +410,29 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
             _current_user_id,
             _resolve_mcp_user_id,
             get_authenticated_oauth_mcp_tools,
+            oauth_dcr_server_for_tool_name,
         )
 
-        name, _tool_call_id = _tool_call_name_and_id(request.tool_call)
+        name, tool_call_id = _tool_call_name_and_id(request.tool_call)
         if request.tool is not None:
             return await handler(request)
+        if not self._allowed(name):
+            return ToolMessage(
+                content=f"Tool '{name}' is not allowed for this agent.",
+                name=name,
+                tool_call_id=tool_call_id,
+                status="error",
+            )
+
+        scope = None if self._mcp_names is None else self._mcp_names
+        owner = oauth_dcr_server_for_tool_name(name, scope=scope)
+        if not owner:
+            return ToolMessage(
+                content=f"Tool '{name}' is not allowed for this agent.",
+                name=name,
+                tool_call_id=tool_call_id,
+                status="error",
+            )
 
         user_id = _resolve_mcp_user_id()
         if user_id:
@@ -345,7 +441,9 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
             return await handler(request)
 
         try:
-            live = await get_authenticated_oauth_mcp_tools(user_id)
+            live = await get_authenticated_oauth_mcp_tools(
+                user_id, server_names=[owner]
+            )
         except Exception:
             logger.warning(
                 "Authenticated MCP tool lookup failed for '%s'",
@@ -363,6 +461,44 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
         return await handler(request.override(tool=live_tool))
 
 
-def build_mcp_runtime_tools_middleware() -> McpRuntimeToolsMiddleware:
+def runtime_mcp_attach_filters(
+    declared_tools: Collection[str] | None = None,
+    declared_mcps: Collection[str] | None = None,
+) -> tuple[frozenset[str] | None, frozenset[str] | None]:
+    """Map yaml ``tools:`` / ``mcps:`` to runtime middleware filters.
+
+    Non-empty ``tools:`` allowlists those live names. ``mcp__`` placeholders
+    are Connect names, not live allowlist entries. Empty live ``tools:`` with
+    ``mcps:`` attaches every live tool on the fence. Both empty attaches
+    nothing.
+    """
+    tools = frozenset(
+        n for n in (declared_tools or ()) if n and not str(n).startswith("mcp__")
+    )
+    mcps = frozenset(n for n in (declared_mcps or ()) if n)
+    if not tools and not mcps:
+        return frozenset(), frozenset()
+    return (tools or None, mcps or None)
+
+
+def build_mcp_runtime_tools_middleware(
+    allowed_tool_names: Collection[str] | None = None,
+    mcp_names: Collection[str] | None = None,
+) -> McpRuntimeToolsMiddleware:
     """Factory used by the orchestrator, subagents, and harness extra_middleware."""
-    return McpRuntimeToolsMiddleware()
+    return McpRuntimeToolsMiddleware(
+        allowed_tool_names=allowed_tool_names,
+        mcp_names=mcp_names,
+    )
+
+
+def build_mcp_runtime_tools_middleware_from_declared(
+    declared_tools: Collection[str] | None = None,
+    declared_mcps: Collection[str] | None = None,
+) -> McpRuntimeToolsMiddleware:
+    """Build runtime MCP middleware from an agent's yaml ``tools:`` / ``mcps:``."""
+    allowed, names = runtime_mcp_attach_filters(declared_tools, declared_mcps)
+    return build_mcp_runtime_tools_middleware(
+        allowed_tool_names=allowed,
+        mcp_names=names,
+    )

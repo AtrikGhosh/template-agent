@@ -193,6 +193,22 @@ class TestRegisterProfiles:
         assert "extra_middleware" in kwargs
         assert callable(kwargs["extra_middleware"])
 
+    def test_extra_middleware_uses_orchestrator_tools_and_mcps(self):
+        from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
+        from deep_agent.src.infrastructure.providers import (
+            _mcp_runtime_extra_middleware,
+        )
+
+        with patch(
+            "deep_agent.src.agent.config.agent_config.get_orchestrator_config",
+            return_value={"tools": ["search"], "mcps": ["acme-jira"]},
+        ):
+            result = _mcp_runtime_extra_middleware()
+        assert len(result) == 1
+        assert isinstance(result[0], McpRuntimeToolsMiddleware)
+        assert result[0]._allowlist == frozenset({"search"})
+        assert result[0]._mcp_names == frozenset({"acme-jira"})
+
 
 class TestAsyncMiddleware:
     """Test async middleware builder."""
