@@ -23,13 +23,36 @@ def _mcp_server_from_tool(tool: Any) -> str | None:
     return server if isinstance(server, str) and server else None
 
 
+def _is_http_401(exc: BaseException) -> bool:
+    """True when *exc* is an HTTP 401 (not 403 / Forbidden)."""
+    for sub in getattr(exc, "exceptions", [exc]):
+        response = getattr(sub, "response", None)
+        if response is not None:
+            status = getattr(response, "status_code", None)
+            if status == 401:
+                return True
+            if status is not None:
+                continue
+        if "401" in str(sub):
+            return True
+        if sub.__cause__ and _is_http_401(sub.__cause__):
+            return True
+        if (
+            sub.__context__
+            and sub is not sub.__context__
+            and _is_http_401(sub.__context__)
+        ):
+            return True
+    return False
+
+
 def _oauth_dcr_http_auth_required(
     tool: Any, exc: BaseException
 ) -> NeedsAuthorization | None:
-    """Map an HTTP 401/403 from an oauth/dcr tool into Connect, or None."""
-    from deep_agent.aegra.mcp import _get_server_configs, _is_auth_error
+    """Map an HTTP 401 from an oauth/dcr tool into Connect, or None."""
+    from deep_agent.aegra.mcp import _get_server_configs
 
-    if not _is_auth_error(exc):
+    if not _is_http_401(exc):
         return None
     mcp_name = _mcp_server_from_tool(tool)
     if not mcp_name:
