@@ -320,6 +320,72 @@ class TestConnectSingleServer:
         assert len(tools) == 1
         assert tools[0].name == "mcp__jira_mcp_prod"
 
+    @pytest.mark.asyncio
+    async def test_listing_401_drops_oauth_token(self):
+        class Http401(Exception):
+            def __init__(self) -> None:
+                super().__init__("unauthorized")
+                self.response = MagicMock(status_code=401)
+
+        mock_client = MagicMock()
+        mock_client.get_tools = AsyncMock(side_effect=Http401())
+        server_cfg = {"auth_mode": "dcr", "description": "Jira"}
+
+        with (
+            patch(
+                "deep_agent.aegra.mcp.MultiServerMCPClient",
+                return_value=mock_client,
+            ),
+            patch(
+                "deep_agent.aegra.mcp_tool_auth._forget_oauth_session",
+                new=AsyncMock(),
+            ) as mock_forget,
+        ):
+            tools = await _connect_single_server(
+                "jira-mcp",
+                {"url": "http://j/mcp/"},
+                server_cfg,
+                timeout=5,
+                server_key="jira-mcp",
+            )
+
+        assert len(tools) == 1
+        assert tools[0].name == "mcp__jira_mcp"
+        mock_forget.assert_awaited_once_with("jira-mcp")
+
+    @pytest.mark.asyncio
+    async def test_listing_403_keeps_oauth_token(self):
+        class Http403(Exception):
+            def __init__(self) -> None:
+                super().__init__("forbidden")
+                self.response = MagicMock(status_code=403)
+
+        mock_client = MagicMock()
+        mock_client.get_tools = AsyncMock(side_effect=Http403())
+        server_cfg = {"auth_mode": "dcr", "description": "Jira"}
+
+        with (
+            patch(
+                "deep_agent.aegra.mcp.MultiServerMCPClient",
+                return_value=mock_client,
+            ),
+            patch(
+                "deep_agent.aegra.mcp_tool_auth._forget_oauth_session",
+                new=AsyncMock(),
+            ) as mock_forget,
+        ):
+            tools = await _connect_single_server(
+                "jira-mcp",
+                {"url": "http://j/mcp/"},
+                server_cfg,
+                timeout=5,
+                server_key="jira-mcp",
+            )
+
+        assert len(tools) == 1
+        assert tools[0].name == "mcp__jira_mcp"
+        mock_forget.assert_not_called()
+
 
 def _reset_mcp_cache() -> None:
     """Clear MCP tool cache between tests."""
@@ -1085,6 +1151,31 @@ class TestOauthDcrLiveNameCatalog:
             ),
         ):
             mcp_mod._oauth_live_name_index.clear()
+            assert oauth_dcr_server_for_tool_name("search") == "acme-jira"
+
+    def test_process_hit_still_unions_redis_owners(self):
+        from deep_agent.aegra import mcp as mcp_mod
+
+        with (
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value=self._NO_PREFIX,
+            ),
+            patch("deep_agent.aegra.redis.cache_set_persistent", return_value=True),
+            patch(
+                "deep_agent.aegra.redis.cache_get",
+                side_effect=lambda key: (
+                    json.dumps(["search"])
+                    if key
+                    in (
+                        "mcp_oauth_live_names:acme-jira",
+                        "mcp_oauth_live_names:acme-vault",
+                    )
+                    else None
+                ),
+            ),
+        ):
+            record_oauth_live_names("acme-vault", ["search"])
             assert oauth_dcr_server_for_tool_name("search") == "acme-jira"
 
 

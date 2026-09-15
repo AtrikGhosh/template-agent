@@ -24,19 +24,17 @@ _profiles_registered: bool = False
 
 
 def _mcp_runtime_extra_middleware() -> list[Any]:
-    """Harness extra_middleware so the general-purpose subagent gets runtime DCR tools."""
-    from deep_agent.aegra.mcp_runtime_tools import (
-        build_mcp_runtime_tools_middleware_from_declared,
-    )
-    from deep_agent.src.agent.config import agent_config
+    """Name slot so the general-purpose subagent inherits runtime DCR middleware.
 
-    orch = agent_config.get_orchestrator_config()
-    return [
-        build_mcp_runtime_tools_middleware_from_declared(
-            orch.get("tools") or [],
-            orch.get("mcps") or [],
-        )
-    ]
+    deepagents appends harness extra_middleware onto the main agent and every
+    yaml subagent. A real ``McpRuntimeToolsMiddleware`` here would double
+    Approve and leak the orchestrator fence onto children. A no-op with the
+    same ``.name`` lets GP replace this slot with the real instance from
+    ``middleware=``; yaml children replace it with their own fence.
+    """
+    from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddlewareSlot
+
+    return [McpRuntimeToolsMiddlewareSlot()]
 
 
 def register_profiles_from_config(config: ProvidersFileConfig) -> None:

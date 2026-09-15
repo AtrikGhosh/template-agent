@@ -173,6 +173,40 @@ class TestAwrapModelCall:
         assert "mcp__jira_mcp" not in names
 
     @pytest.mark.asyncio
+    async def test_drops_live_tool_from_non_first_wins_owner(self):
+        placeholder = _mcp_tool("mcp__acme_jira")
+        vault_search = _mcp_tool("search", "acme-vault")
+        req = _model_request([placeholder])
+        handler = AsyncMock(return_value="ok")
+        mw = McpRuntimeToolsMiddleware()
+        with (
+            patch(
+                "deep_agent.aegra.mcp._resolve_mcp_user_id",
+                return_value="user-1",
+            ),
+            patch("deep_agent.aegra.mcp._current_user_id"),
+            patch(
+                "deep_agent.aegra.mcp.get_authenticated_oauth_mcp_tools",
+                new=AsyncMock(return_value=[vault_search]),
+            ),
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value={
+                    "acme-jira": {"enabled": True, "auth_mode": "dcr"},
+                    "acme-vault": {"enabled": True, "auth_mode": "dcr"},
+                },
+            ),
+            patch(
+                "deep_agent.aegra.mcp.oauth_dcr_server_for_tool_name",
+                return_value="acme-jira",
+            ),
+        ):
+            await mw.awrap_model_call(req, handler)
+        names = [t.name for t in handler.call_args[0][0].tools]
+        assert "search" not in names
+        assert "mcp__acme_jira" in names
+
+    @pytest.mark.asyncio
     async def test_mcp_names_fence_skips_unlisted_server_placeholder(self):
         placeholder = MagicMock()
         placeholder.name = "mcp__jira_mcp"
@@ -612,6 +646,134 @@ class TestAafterModel:
         payload = mock_interrupt.call_args[0][0]
         assert "mcp_auth_required" in payload
         assert "jira-mcp" in payload
+
+    @pytest.mark.asyncio
+    async def test_resource_calls_authenticate_one_dcr_server_at_a_time(self):
+        state = _ai_state(
+            {
+                "name": "mcp_list_resources",
+                "id": "r1",
+                "args": {"mcp_name": "template-mcp-server-dcr-open"},
+            },
+            {
+                "name": "mcp_list_resource_templates",
+                "id": "t1",
+                "args": {"mcp_name": "template-mcp-server-dcr-open"},
+            },
+            {
+                "name": "mcp_list_resources",
+                "id": "r2",
+                "args": {"mcp_name": "template-mcp-server-dcr-gated"},
+            },
+            {
+                "name": "mcp_list_resource_templates",
+                "id": "t2",
+                "args": {"mcp_name": "template-mcp-server-dcr-gated"},
+            },
+        )
+        servers = {
+            "template-mcp-server-dcr-open": {
+                "enabled": True,
+                "auth_mode": "dcr",
+            },
+            "template-mcp-server-dcr-gated": {
+                "enabled": True,
+                "auth_mode": "dcr",
+            },
+        }
+        tokens: dict[str, str | None] = {
+            "template-mcp-server-dcr-open": None,
+            "template-mcp-server-dcr-gated": None,
+        }
+
+        async def resolve(name, _entry, _sso, _user_id):
+            return tokens.get(name)
+
+        def on_interrupt(payload):
+            if "template-mcp-server-dcr-open" in payload:
+                tokens["template-mcp-server-dcr-open"] = "tok-open"
+            if "template-mcp-server-dcr-gated" in payload:
+                tokens["template-mcp-server-dcr-gated"] = "tok-gated"
+            return "continue"
+
+        mw = McpRuntimeToolsMiddleware()
+        with (
+            patch(
+                "deep_agent.aegra.mcp._resolve_mcp_user_id",
+                return_value="user-1",
+            ),
+            patch("deep_agent.aegra.mcp._current_user_id"),
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value=servers,
+            ),
+            patch(
+                "deep_agent.aegra.mcp._resolve_connection_token",
+                new=resolve,
+            ),
+            patch(
+                "deep_agent.aegra.mcp_auth.get_mcp_credential_resolver",
+            ) as mock_resolver,
+            patch(
+                "deep_agent.aegra.mcp_runtime_tools.interrupt",
+                side_effect=on_interrupt,
+            ) as mock_interrupt,
+        ):
+            mock_resolver.return_value.connect_url.side_effect = lambda mcp_name: (
+                f"/mcp/{mcp_name}/connect"
+            )
+            result = await mw.aafter_model(state, None)
+        assert result is None
+        assert mock_interrupt.call_count == 2
+        first, second = (c[0][0] for c in mock_interrupt.call_args_list)
+        assert "template-mcp-server-dcr-open" in first
+        assert "template-mcp-server-dcr-gated" in second
+
+    @pytest.mark.asyncio
+    async def test_resource_call_skips_sso_and_fenced_out_dcr(self):
+        state = _ai_state(
+            {
+                "name": "mcp_list_resources",
+                "id": "sso",
+                "args": {"mcp_name": "template-mcp-server"},
+            },
+            {
+                "name": "mcp_list_resources",
+                "id": "gated",
+                "args": {"mcp_name": "template-mcp-server-dcr-gated"},
+            },
+        )
+        servers = {
+            "template-mcp-server": {"enabled": True, "auth_mode": "sso"},
+            "template-mcp-server-dcr-gated": {
+                "enabled": True,
+                "auth_mode": "dcr",
+            },
+        }
+        mw = McpRuntimeToolsMiddleware(
+            mcp_names=frozenset({"template-mcp-server-dcr-open"}),
+        )
+        with (
+            patch(
+                "deep_agent.aegra.mcp._resolve_mcp_user_id",
+                return_value="user-1",
+            ),
+            patch("deep_agent.aegra.mcp._current_user_id"),
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value=servers,
+            ),
+            patch(
+                "deep_agent.aegra.mcp._resolve_connection_token",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "deep_agent.aegra.mcp_runtime_tools.interrupt",
+            ) as mock_interrupt,
+        ):
+            result = await mw.aafter_model(state, None)
+        assert result is None
+        mock_interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_hitl_for_live_tool_when_token_present(self):
