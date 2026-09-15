@@ -53,6 +53,7 @@ _oauth_live_tools: dict[str, tuple[float, list[Any]]] = {}
 _OAUTH_LIVE_TOOLS_TTL: float = min(60.0, _MCP_TOOL_CACHE_TTL)
 # live tool name → oauth/dcr mcp.json keys (filled on tools/list, not per-user)
 _oauth_live_name_index: dict[str, set[str]] = {}
+_oauth_live_names_hydrated_at: float = 0.0
 
 _current_access_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_current_access_token", default=None
@@ -472,7 +473,16 @@ def record_oauth_live_names(mcp_name: str, names: list[str]) -> None:
     _apply_oauth_live_names(mcp_name, names)
 
 
-def _catalog_servers_for_name(name: str) -> set[str]:
+def _refresh_oauth_live_name_index() -> None:
+    """Load live-name catalogs from Redis at most once per live-tools TTL."""
+    global _oauth_live_names_hydrated_at  # noqa: PLW0603
+
+    now = time.time()
+    if (
+        _oauth_live_name_index
+        and (now - _oauth_live_names_hydrated_at) < _OAUTH_LIVE_TOOLS_TTL
+    ):
+        return
     from deep_agent.aegra.redis import cache_get
 
     for key in _enabled_oauth_dcr_servers():
@@ -487,6 +497,11 @@ def _catalog_servers_for_name(name: str) -> set[str]:
             continue
         listed = [str(item) for item in parsed if item]
         _apply_oauth_live_names(key, listed)
+    _oauth_live_names_hydrated_at = now
+
+
+def _catalog_servers_for_name(name: str) -> set[str]:
+    _refresh_oauth_live_name_index()
     return set(_oauth_live_name_index.get(name) or ())
 
 

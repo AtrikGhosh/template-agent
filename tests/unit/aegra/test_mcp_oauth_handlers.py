@@ -732,6 +732,7 @@ class TestHandleMcpDisconnect:
             patch(
                 "deep_agent.aegra.mcp.invalidate_authenticated_oauth_tools",
             ),
+            patch("deep_agent.aegra.graph.invalidate_graph_cache") as mock_graph,
         ):
             mock_settings.database_uri = "postgresql://test"
             mock_settings.agent_deployment_id = "test-agent"
@@ -740,6 +741,7 @@ class TestHandleMcpDisconnect:
         assert result == {"mcp_name": "oauth-mcp", "connected": False}
         store.delete_token.assert_awaited_once_with("test-agent", "user-1", "oauth-mcp")
         resolver.invalidate_cache.assert_called_once_with("user-1", "oauth-mcp")
+        mock_graph.assert_not_called()
 
     async def test_rejects_dcr_when_feature_disabled(self):
         store = MagicMock()

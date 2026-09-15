@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from typing import Any
 
 from langgraph.types import interrupt
@@ -33,7 +34,7 @@ def _is_http_401(exc: BaseException) -> bool:
                 return True
             if status is not None:
                 continue
-        if "401" in str(sub):
+        if re.search(r"(?<!\d)401(?!\d)", str(sub)):
             return True
         if sub.__cause__ and _is_http_401(sub.__cause__):
             return True

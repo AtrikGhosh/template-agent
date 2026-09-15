@@ -18,6 +18,8 @@ def _assert_default_subagent_call(mock_sa: MagicMock, **expected: object) -> Non
     kwargs = mock_sa.call_args.kwargs
     for key, value in expected.items():
         assert kwargs[key] == value
+    if "tools" not in expected:
+        assert "tools" not in kwargs
     assert any(isinstance(m, McpRuntimeToolsMiddleware) for m in kwargs["middleware"])
 
 

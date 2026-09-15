@@ -9,6 +9,7 @@ from langchain_core.messages import ToolMessage
 
 from deep_agent.aegra.mcp_tool_auth import (
     _fix_stringified_json_args,
+    _is_http_401,
     _wrap_single_tool,
     wrap_mcp_tools_for_auth,
 )
@@ -23,6 +24,27 @@ def _make_mock_tool(*, name: str = "gitlab_list_issues", coroutine=None):
     tool.args = {}
     tool.ainvoke = AsyncMock(return_value="ok")
     return tool
+
+
+class TestIsHttp401:
+    def test_status_401_is_true(self):
+        exc = Exception("Unauthorized")
+        exc.response = MagicMock(status_code=401)
+        assert _is_http_401(exc) is True
+
+    def test_status_403_is_false(self):
+        exc = Exception("Forbidden")
+        exc.response = MagicMock(status_code=403)
+        assert _is_http_401(exc) is False
+
+    def test_standalone_401_in_message_is_true(self):
+        assert _is_http_401(RuntimeError("HTTP 401 Unauthorized")) is True
+
+    def test_4012_is_false(self):
+        assert _is_http_401(RuntimeError("error 4012")) is False
+
+    def test_1401_is_false(self):
+        assert _is_http_401(RuntimeError("error 1401")) is False
 
 
 class TestSafeAinvoke:
@@ -118,6 +140,7 @@ class TestSafeAinvoke:
         ):
             result = await wrapped.ainvoke({"id": "call_403", "name": "jira_search"})
         assert isinstance(result, ToolMessage)
+        assert result.status == "error"
         assert "[TOOL_ERROR]" in result.content
         mock_int.assert_not_called()
         mock_store_cls.assert_not_called()
@@ -134,6 +157,7 @@ class TestSafeAinvoke:
         ):
             result = await wrapped.ainvoke({"id": "call_sso"})
         assert isinstance(result, ToolMessage)
+        assert result.status == "error"
         assert "[TOOL_ERROR]" in result.content
 
     @pytest.mark.asyncio
