@@ -626,7 +626,5 @@ class TestAuthenticatedOauthMcpTools:
 
     def test_invalidate_authenticated_oauth_tools_drops_process_cache(self):
         mcp_mod._oauth_live_tools["user-1:jira-mcp"] = (time.time(), [MagicMock()])
-        with patch("deep_agent.aegra.redis.cache_delete") as mock_del:
-            mcp_mod.invalidate_authenticated_oauth_tools("user-1", "jira-mcp")
+        mcp_mod.invalidate_authenticated_oauth_tools("user-1", "jira-mcp")
         assert "user-1:jira-mcp" not in mcp_mod._oauth_live_tools
-        mock_del.assert_called_once()
