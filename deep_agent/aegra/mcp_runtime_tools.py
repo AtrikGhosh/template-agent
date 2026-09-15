@@ -50,7 +50,9 @@ def _tool_call_args(tool_call: Any) -> dict[str, Any]:
 
 
 def _is_auth_continue(raw: Any) -> bool:
-    return raw in (None, "continue") or raw == {"type": "continue"}
+    if raw == "continue" or raw == {"type": "continue"}:
+        return True
+    return False
 
 
 def _runtime_hitl_required(tool_name: str) -> bool:
@@ -123,6 +125,25 @@ def _interrupt_hitl(payload: dict[str, Any]) -> Any:
     return raw
 
 
+def _reject_decisions_for_payload(payload: Any) -> dict[str, Any]:
+    """Fail-closed HITL payload when the resume is not ``{decisions: ...}``."""
+    n = 1
+    if isinstance(payload, dict):
+        actions = payload.get("action_requests") or []
+        if isinstance(actions, list) and actions:
+            n = len(actions)
+    missing = {"type": "reject", "message": "Missing HITL decision."}
+    return {"decisions": [dict(missing) for _ in range(n)]}
+
+
+def _interrupt_compiled_hitl(payload: Any) -> Any:
+    """Compiled HITL: drain Connect ``continue``, reject an empty resume."""
+    raw = _interrupt_hitl(payload if isinstance(payload, dict) else {})
+    if isinstance(raw, dict) and isinstance(raw.get("decisions"), list):
+        return raw
+    return _reject_decisions_for_payload(payload)
+
+
 _compiled_hitl_auth_resume_installed = False
 
 
@@ -131,14 +152,12 @@ def install_compiled_hitl_auth_resume() -> None:
 
     LangChain HITL does ``interrupt(...)["decisions"]``. After Connect, that
     ``interrupt`` still returns ``"continue"``, which crashes. One retry
-    pauses for a real Approve, matching :func:`_interrupt_hitl`.
+    pauses for a real Approve. An empty resume rejects instead of looping.
     """
-    global _compiled_hitl_auth_resume_installed  # noqa: PLW0603
-    if _compiled_hitl_auth_resume_installed:
-        return
     import langchain.agents.middleware.human_in_the_loop as hitl_mod
 
-    hitl_mod.interrupt = _interrupt_hitl
+    hitl_mod.interrupt = _interrupt_compiled_hitl
+    global _compiled_hitl_auth_resume_installed  # noqa: PLW0603
     _compiled_hitl_auth_resume_installed = True
 
 
@@ -172,7 +191,10 @@ def _apply_live_hitl_decisions(
         name, tool_call_id = _tool_call_name_and_id(call)
         decision = _decision_at(raw, decision_idx)
         decision_idx += 1
-        kind = decision.get("type") or "approve"
+        kind = decision.get("type")
+        if kind == "approve":
+            revised.append(call)
+            continue
         if kind == "reject":
             reason = str(decision.get("message") or "") or (
                 "The user rejected this tool call."
@@ -214,7 +236,14 @@ def _apply_live_hitl_decisions(
                     new_call["args"] = edited["args"]
             revised.append(new_call)
             continue
-        revised.append(call)
+        messages.append(
+            ToolMessage(
+                content="Unknown HITL decision type.",
+                name=name,
+                tool_call_id=tool_call_id,
+                status="error",
+            )
+        )
     return revised, messages
 
 
@@ -458,7 +487,9 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
         )
         if live_tool is None:
             return await handler(request)
-        return await handler(request.override(tool=live_tool))
+        from deep_agent.src.guardrails.tool_proxy import wrap_tools
+
+        return await handler(request.override(tool=wrap_tools([live_tool])[0]))
 
 
 def runtime_mcp_attach_filters(

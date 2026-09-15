@@ -973,6 +973,18 @@ class TestOauthDcrLiveNameCatalog:
             assert oauth_dcr_server_for_tool_name("create_issue") == "acme-jira"
             assert rewrite_oauth_dcr_tool_names(["search"]) == ["mcp__acme_jira"]
 
+    def test_catalog_redis_fail_does_not_index(self):
+        with (
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value=self._NO_PREFIX,
+            ),
+            patch("deep_agent.aegra.redis.cache_set_persistent", return_value=False),
+        ):
+            with pytest.raises(RuntimeError, match="live tool names"):
+                record_oauth_live_names("acme-jira", ["search"])
+            assert oauth_dcr_server_for_tool_name("search") is None
+
     def test_scope_excludes_out_of_fence_server(self):
         with (
             patch(

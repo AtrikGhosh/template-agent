@@ -461,10 +461,15 @@ def _apply_oauth_live_names(mcp_name: str, names: list[str]) -> None:
 
 def record_oauth_live_names(mcp_name: str, names: list[str]) -> None:
     """Remember which live tool names belong to *mcp_name* (process + Redis)."""
-    _apply_oauth_live_names(mcp_name, names)
     from deep_agent.aegra.redis import cache_set_persistent
 
-    cache_set_persistent(_oauth_live_names_redis_key(mcp_name), json.dumps(list(names)))
+    stored = cache_set_persistent(
+        _oauth_live_names_redis_key(mcp_name), json.dumps(list(names))
+    )
+    if not stored:
+        logger.error("Redis SET failed for MCP live tool names: mcp='%s'", mcp_name)
+        raise RuntimeError(f"Failed to persist MCP live tool names for '{mcp_name}'")
+    _apply_oauth_live_names(mcp_name, names)
 
 
 def _catalog_servers_for_name(name: str) -> set[str]:
@@ -1078,7 +1083,7 @@ async def get_authenticated_oauth_mcp_tools(
         )
         if cached_live:
             collected.extend(cached_live)
-            record_oauth_live_names(
+            _apply_oauth_live_names(
                 name,
                 [
                     str(getattr(t, "name", ""))
@@ -1119,14 +1124,21 @@ async def get_authenticated_oauth_mcp_tools(
             live = wrap_mcp_tools_for_auth(live)
             if not live:
                 continue
+            names = [
+                str(getattr(t, "name", "")) for t in live if getattr(t, "name", None)
+            ]
+            try:
+                record_oauth_live_names(mcp_name, names)
+            except RuntimeError:
+                logger.error(
+                    "[%s] live tool name catalog was not persisted — skipping cache",
+                    mcp_name,
+                )
+                continue
             _oauth_live_tools[_oauth_live_cache_key(user_id, mcp_name)] = (
                 time.time(),
                 live,
             )
-            names = [
-                str(getattr(t, "name", "")) for t in live if getattr(t, "name", None)
-            ]
-            record_oauth_live_names(mcp_name, names)
             cache_set(
                 _oauth_catalog_redis_key(user_id, mcp_name),
                 json.dumps(names),
