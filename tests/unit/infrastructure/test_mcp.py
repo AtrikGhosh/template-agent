@@ -1020,11 +1020,13 @@ class TestOauthDcrLiveNameCatalog:
         from deep_agent.aegra import mcp as mcp_mod
 
         mcp_mod._oauth_live_name_index.clear()
+        mcp_mod._oauth_live_names_hydrated_at = 0.0
 
     def teardown_method(self):
         from deep_agent.aegra import mcp as mcp_mod
 
         mcp_mod._oauth_live_name_index.clear()
+        mcp_mod._oauth_live_names_hydrated_at = 0.0
 
     def test_catalog_maps_unprefixed_live_name(self):
         with (
@@ -1151,7 +1153,36 @@ class TestOauthDcrLiveNameCatalog:
             ),
         ):
             mcp_mod._oauth_live_name_index.clear()
+            mcp_mod._oauth_live_names_hydrated_at = 0.0
             assert oauth_dcr_server_for_tool_name("search") == "acme-jira"
+
+    def test_repeated_lookup_reads_redis_once_until_ttl(self):
+        from deep_agent.aegra import mcp as mcp_mod
+
+        getter = MagicMock(
+            side_effect=lambda key: (
+                json.dumps(["search"])
+                if key == "mcp_oauth_live_names:acme-jira"
+                else None
+            )
+        )
+        with (
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value=self._NO_PREFIX,
+            ),
+            patch("deep_agent.aegra.redis.cache_get", getter),
+        ):
+            mcp_mod._oauth_live_name_index.clear()
+            mcp_mod._oauth_live_names_hydrated_at = 0.0
+            assert oauth_dcr_server_for_tool_name("search") == "acme-jira"
+            first = getter.call_count
+            assert first >= 1
+            assert oauth_dcr_server_for_tool_name("search") == "acme-jira"
+            assert getter.call_count == first
+            mcp_mod._oauth_live_names_hydrated_at -= mcp_mod._OAUTH_LIVE_TOOLS_TTL + 1
+            assert oauth_dcr_server_for_tool_name("search") == "acme-jira"
+            assert getter.call_count > first
 
     def test_process_hit_still_unions_redis_owners(self):
         from deep_agent.aegra import mcp as mcp_mod
