@@ -99,7 +99,9 @@ class TestSafeAinvoke:
             patch("deep_agent.aegra.mcp._resolve_mcp_user_id", return_value="user-1"),
             patch("deep_agent.aegra.mcp_auth.get_mcp_credential_resolver") as mock_res,
             patch("deep_agent.aegra.mcp_token_store.McpTokenStore") as mock_store_cls,
-            patch("deep_agent.aegra.mcp.invalidate_authenticated_oauth_tools"),
+            patch(
+                "deep_agent.aegra.mcp.invalidate_authenticated_oauth_tools"
+            ) as mock_invalidate,
             patch("deep_agent.src.settings.settings") as mock_settings,
             patch("deep_agent.aegra.mcp_tool_auth.interrupt") as mock_int,
         ):
@@ -118,6 +120,7 @@ class TestSafeAinvoke:
         mock_res.return_value.invalidate_cache.assert_called_once_with(
             "user-1", "jira-mcp"
         )
+        mock_invalidate.assert_called_once_with("user-1", "jira-mcp")
 
     @pytest.mark.asyncio
     async def test_http_403_on_dcr_tool_stays_tool_error(self):
