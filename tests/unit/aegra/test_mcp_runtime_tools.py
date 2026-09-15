@@ -290,6 +290,45 @@ class TestAwrapToolCall:
         assert overridden.tool is live
 
     @pytest.mark.asyncio
+    async def test_wraps_live_tool_with_guardian(self):
+        from deep_agent.aegra.mcp import record_oauth_live_names
+
+        live = MagicMock()
+        live.name = "jira_search"
+        wrapped = MagicMock()
+        wrapped.name = "jira_search"
+        req = _tool_request(name="jira_search", tool=None)
+        handler = AsyncMock(return_value="ran")
+        mw = McpRuntimeToolsMiddleware()
+        with (
+            patch(
+                "deep_agent.aegra.mcp._resolve_mcp_user_id",
+                return_value="user-1",
+            ),
+            patch("deep_agent.aegra.mcp._current_user_id"),
+            patch(
+                "deep_agent.aegra.mcp.get_authenticated_oauth_mcp_tools",
+                new=AsyncMock(return_value=[live]),
+            ),
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value={
+                    "jira-mcp": {"enabled": True, "auth_mode": "dcr"},
+                },
+            ),
+            patch("deep_agent.aegra.redis.cache_set_persistent", return_value=True),
+            patch(
+                "deep_agent.src.guardrails.tool_proxy.wrap_tools",
+                return_value=[wrapped],
+            ) as mock_wrap,
+        ):
+            record_oauth_live_names("jira-mcp", ["jira_search"])
+            result = await mw.awrap_tool_call(req, handler)
+        assert result == "ran"
+        mock_wrap.assert_called_once_with([live])
+        assert handler.call_args[0][0].tool is wrapped
+
+    @pytest.mark.asyncio
     async def test_refuses_live_tool_outside_mcp_fence(self):
         from deep_agent.aegra.mcp import record_oauth_live_names
 
@@ -956,7 +995,17 @@ class TestApplyLiveHitlDecisions:
     def test_continue_is_detected(self):
         assert _is_auth_continue("continue")
         assert _is_auth_continue({"type": "continue"})
+        assert not _is_auth_continue(None)
         assert not _is_auth_continue({"decisions": [{"type": "approve"}]})
+
+    def test_unknown_type_is_reject(self):
+        calls = [{"name": "search", "id": "s1", "args": {}}]
+        revised, messages = _apply_live_hitl_decisions(
+            calls, [0], {"decisions": [{"type": "whatever"}]}
+        )
+        assert revised == []
+        assert messages[0].status == "error"
+        assert "Unknown HITL decision type." in messages[0].content
 
     def test_interrupt_hitl_retries_after_continue(self):
         resumes = iter(["continue", {"decisions": [{"type": "approve"}]}])
@@ -997,6 +1046,39 @@ class TestApplyLiveHitlDecisions:
             result = mw.after_model(state, MagicMock())
         assert result is not None
         assert result["messages"][0].tool_calls[0]["name"] == "task"
+
+    def test_compiled_hitl_empty_resume_rejects_without_typeerror(self):
+        from langchain.agents.middleware.human_in_the_loop import (
+            HumanInTheLoopMiddleware,
+        )
+
+        install_compiled_hitl_auth_resume()
+        mw = HumanInTheLoopMiddleware(interrupt_on={"task": True})
+        state = {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "id": "t1",
+                            "args": {"description": "x"},
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        }
+        with patch(
+            "deep_agent.aegra.mcp_runtime_tools.interrupt",
+            return_value=None,
+        ):
+            result = mw.after_model(state, MagicMock())
+        assert result is not None
+        tool_msgs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        assert tool_msgs
+        assert tool_msgs[0].status == "error"
+        assert "Missing HITL decision." in tool_msgs[0].content
 
     def test_missing_decision_is_reject(self):
         assert _decision_at(None, 0) == {
