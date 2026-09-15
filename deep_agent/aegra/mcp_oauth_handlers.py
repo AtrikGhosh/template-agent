@@ -334,6 +334,9 @@ async def handle_mcp_oauth_callback(
         scopes=scopes,
     )
     get_mcp_credential_resolver().invalidate_cache(user_id, mcp_name)
+    from deep_agent.aegra.mcp import invalidate_authenticated_oauth_tools
+
+    invalidate_authenticated_oauth_tools(user_id, mcp_name)
 
     opener_origin = caller_origin or settings.ui_origin
     return HTMLResponse(_callback_html(mcp_name=mcp_name, opener_origin=opener_origin))

@@ -51,6 +51,8 @@ _cached_tools_ts: dict[str | None, float] = {}
 # Redis holds the token (and optional name catalog). Any pod can refill this.
 _oauth_live_tools: dict[str, tuple[float, list[Any]]] = {}
 _OAUTH_LIVE_TOOLS_TTL: float = min(60.0, _MCP_TOOL_CACHE_TTL)
+# live tool name → oauth/dcr mcp.json keys (filled on tools/list, not per-user)
+_oauth_live_name_index: dict[str, set[str]] = {}
 
 _current_access_token: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_current_access_token", default=None
@@ -430,21 +432,94 @@ def _enabled_oauth_dcr_servers() -> dict[str, dict[str, Any]]:
     }
 
 
-def oauth_dcr_server_for_tool_name(name: str) -> str | None:
+def _fenced_oauth_dcr_servers(
+    scope: list[str] | frozenset[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Enabled oauth/dcr servers, optionally restricted to *scope* (``mcps:`` fence)."""
+    servers = _enabled_oauth_dcr_servers()
+    if scope is None:
+        return servers
+    wanted = set(scope)
+    return {key: cfg for key, cfg in servers.items() if key in wanted}
+
+
+def _oauth_live_names_redis_key(mcp_name: str) -> str:
+    return f"mcp_oauth_live_names:{mcp_name}"
+
+
+def _apply_oauth_live_names(mcp_name: str, names: list[str]) -> None:
+    """Replace this server's entries in the process name index."""
+    for tool_name, owners in list(_oauth_live_name_index.items()):
+        owners.discard(mcp_name)
+        if not owners:
+            del _oauth_live_name_index[tool_name]
+    for tool_name in names:
+        if not tool_name or tool_name.startswith("mcp__"):
+            continue
+        _oauth_live_name_index.setdefault(tool_name, set()).add(mcp_name)
+
+
+def record_oauth_live_names(mcp_name: str, names: list[str]) -> None:
+    """Remember which live tool names belong to *mcp_name* (process + Redis)."""
+    _apply_oauth_live_names(mcp_name, names)
+    from deep_agent.aegra.redis import cache_set_persistent
+
+    cache_set_persistent(_oauth_live_names_redis_key(mcp_name), json.dumps(list(names)))
+
+
+def _catalog_servers_for_name(name: str) -> set[str]:
+    owners = set(_oauth_live_name_index.get(name) or ())
+    if owners:
+        return owners
+    from deep_agent.aegra.redis import cache_get
+
+    for key in _enabled_oauth_dcr_servers():
+        raw = cache_get(_oauth_live_names_redis_key(key))
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(parsed, list):
+            continue
+        listed = [str(item) for item in parsed if item]
+        _apply_oauth_live_names(key, listed)
+    return set(_oauth_live_name_index.get(name) or ())
+
+
+def oauth_dcr_server_for_tool_name(
+    name: str,
+    scope: list[str] | frozenset[str] | None = None,
+) -> str | None:
     """Return the enabled oauth/dcr server key for a placeholder or live tool name.
 
-    Placeholders (``mcp__jira_mcp``) and live names (``jira_search``) map to the
-    same server. SSO/api_key tools and unknown names return ``None``.
-    Longest ``tool_prefix`` (or server key) wins.
+    Placeholders (``mcp__jira_mcp``) map by server key. Live names map from the
+    tools/list catalog, then from ``tool_prefix``. SSO/api_key and unknown names
+    return ``None``. *scope* is the ``mcps:`` fence (``None`` = all enabled).
+    Duplicate catalog owners in scope follow SSO first-wins (``mcp.json`` order).
     """
     if not name:
         return None
-    servers = _enabled_oauth_dcr_servers()
+    servers = _fenced_oauth_dcr_servers(scope)
     if not servers:
         return None
     for key in servers:
         if name == placeholder_tool_name(key):
             return key
+    owners = {key for key in _catalog_servers_for_name(name) if key in servers}
+    if owners:
+        winner = next(key for key in servers if key in owners)
+        extras = [key for key in servers if key in owners and key != winner]
+        if extras:
+            logger.warning(
+                "Live MCP tool '%s' is advertised by multiple oauth/dcr servers %s "
+                "— using '%s' (first wins)",
+                name,
+                sorted(owners),
+                winner,
+            )
+        return winner
     prefix_pairs = sorted(
         ((str(cfg.get("tool_prefix") or key), key) for key, cfg in servers.items()),
         key=lambda item: len(item[0]),
@@ -456,7 +531,10 @@ def oauth_dcr_server_for_tool_name(name: str) -> str | None:
     return None
 
 
-def rewrite_oauth_dcr_tool_names(tool_names: list[str]) -> list[str]:
+def rewrite_oauth_dcr_tool_names(
+    tool_names: list[str],
+    scope: list[str] | frozenset[str] | None = None,
+) -> list[str]:
     """Map live OAuth/DCR tool names to compile-time placeholders.
 
     Builders may list live names (``jira_search``) or placeholders
@@ -464,7 +542,8 @@ def rewrite_oauth_dcr_tool_names(tool_names: list[str]) -> list[str]:
     placeholders for oauth/dcr, so live names are rewritten before
     ``resolve_tools``. SSO/api_key tools and unknown names pass through.
     Two live names from the same server collapse to one placeholder.
-    Longest ``tool_prefix`` (or server key) wins.
+    Mapping uses the live-name catalog, then ``tool_prefix``.
+    *scope* is the ``mcps:`` fence (``None`` = all enabled).
     """
     if not tool_names:
         return list(tool_names)
@@ -472,13 +551,94 @@ def rewrite_oauth_dcr_tool_names(tool_names: list[str]) -> list[str]:
     rewritten: list[str] = []
     seen: set[str] = set()
     for name in tool_names:
-        key = oauth_dcr_server_for_tool_name(name)
+        key = oauth_dcr_server_for_tool_name(name, scope=scope)
         mapped = placeholder_tool_name(key) if key else name
         if mapped in seen:
             continue
         seen.add(mapped)
         rewritten.append(mapped)
     return rewritten
+
+
+def _tool_mcp_server(tool: Any) -> str | None:
+    metadata = getattr(tool, "metadata", None)
+    if isinstance(metadata, dict):
+        server = metadata.get("mcp_server")
+        if isinstance(server, str) and server:
+            return server
+    name = str(getattr(tool, "name", "") or "")
+    return oauth_dcr_server_for_tool_name(name)
+
+
+def _available_on_mcps(available: list[Any], mcp_names: list[str]) -> list[Any]:
+    if not mcp_names:
+        return list(available)
+    wanted = set(mcp_names)
+    kept: list[Any] = []
+    for tool in available:
+        server = _tool_mcp_server(tool)
+        if server is None or server in wanted:
+            kept.append(tool)
+    return kept
+
+
+def resolve_declared_mcp_tools(
+    declared_tools: list[str],
+    declared_mcps: list[str],
+    available: list[Any],
+    agent_name: str = "agent",
+) -> list[Any]:
+    """Bind compile-time MCP tools from yaml ``tools:`` / ``mcps:``.
+
+    ``mcps:`` is the server fence. ``tools:`` is the name allowlist when
+    non-empty. Empty ``tools:`` with ``mcps:`` keeps every compile tool on
+    those servers. Both empty yields no MCP tools. OAuth/DCR servers in
+    the fence always get their connect placeholder.
+    """
+    from deep_agent.src.agent.config.resolver import resolve_tools
+
+    tool_names = list(declared_tools or [])
+    mcp_names = list(declared_mcps or [])
+    scoped = _available_on_mcps(available, mcp_names)
+
+    if not tool_names and not mcp_names:
+        return []
+
+    if not tool_names:
+        return scoped
+
+    scope: list[str] | None = mcp_names or None
+    rewritten = rewrite_oauth_dcr_tool_names(tool_names, scope=scope)
+    resolved = resolve_tools(rewritten, scoped, agent_name=agent_name)
+    if mcp_names:
+        have = {t.name for t in resolved}
+        configs = _get_server_configs()
+        for key in mcp_names:
+            entry = configs.get(key)
+            if not isinstance(entry, dict) or not entry.get("enabled", False):
+                continue
+            if entry.get("auth_mode") not in ("oauth", "dcr"):
+                continue
+            want = placeholder_tool_name(key)
+            placeholder = next(
+                (t for t in scoped if getattr(t, "name", None) == want),
+                None,
+            )
+            if placeholder is not None and placeholder.name not in have:
+                resolved.append(placeholder)
+                have.add(placeholder.name)
+        for name in tool_names:
+            owner = oauth_dcr_server_for_tool_name(name)
+            if owner and owner not in mcp_names:
+                logger.warning(
+                    "Agent '%s' lists tool '%s' from MCP '%s' which is not in "
+                    "mcps: %s — ignoring",
+                    agent_name,
+                    name,
+                    owner,
+                    mcp_names,
+                )
+    return resolved
 
 
 async def _resolve_connection_token(
@@ -911,8 +1071,21 @@ async def get_authenticated_oauth_mcp_tools(
     for name, entry in servers.items():
         cache_key = _oauth_live_cache_key(user_id, name)
         cached = _oauth_live_tools.get(cache_key)
-        if cached and (now - cached[0]) < _OAUTH_LIVE_TOOLS_TTL:
-            collected.extend(cached[1])
+        cached_live = (
+            cached[1]
+            if cached and cached[1] and (now - cached[0]) < _OAUTH_LIVE_TOOLS_TTL
+            else None
+        )
+        if cached_live:
+            collected.extend(cached_live)
+            record_oauth_live_names(
+                name,
+                [
+                    str(getattr(t, "name", ""))
+                    for t in cached_live
+                    if getattr(t, "name", None)
+                ],
+            )
             continue
         bearer = await _resolve_connection_token(name, entry, None, user_id)
         if not bearer:
@@ -941,7 +1114,11 @@ async def get_authenticated_oauth_mcp_tools(
                 )
                 continue
             live = [tool for tool in result if not _is_oauth_placeholder_tool(tool)]
+            if not live:
+                continue
             live = wrap_mcp_tools_for_auth(live)
+            if not live:
+                continue
             _oauth_live_tools[_oauth_live_cache_key(user_id, mcp_name)] = (
                 time.time(),
                 live,
@@ -949,6 +1126,7 @@ async def get_authenticated_oauth_mcp_tools(
             names = [
                 str(getattr(t, "name", "")) for t in live if getattr(t, "name", None)
             ]
+            record_oauth_live_names(mcp_name, names)
             cache_set(
                 _oauth_catalog_redis_key(user_id, mcp_name),
                 json.dumps(names),

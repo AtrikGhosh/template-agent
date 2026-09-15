@@ -91,6 +91,23 @@ class TestBuildMiddlewareList:
         assert len(result) == 6
         assert any(isinstance(m, _DummyMiddleware) for m in result)
 
+    def test_runtime_middleware_uses_declared_tools_and_mcps(self):
+        resolved = ResolvedMiddlewareConfig(summarization_tool_enabled=False)
+        with patch(
+            "deep_agent.src.infrastructure.middleware.settings"
+        ) as mock_settings:
+            mock_settings.MIDDLEWARE_ENABLED = True
+            result = build_middleware_list(
+                resolved,
+                declared_tools=["search"],
+                declared_mcps=["acme-jira"],
+            )
+        from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
+
+        runtime = next(m for m in result if isinstance(m, McpRuntimeToolsMiddleware))
+        assert runtime._allowlist == frozenset({"search"})
+        assert runtime._mcp_names == frozenset({"acme-jira"})
+
 
 class TestBuildExcludedMiddleware:
     """Test excluded middleware list generation."""

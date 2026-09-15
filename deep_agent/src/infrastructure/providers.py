@@ -25,9 +25,18 @@ _profiles_registered: bool = False
 
 def _mcp_runtime_extra_middleware() -> list[Any]:
     """Harness extra_middleware so the general-purpose subagent gets runtime DCR tools."""
-    from deep_agent.aegra.mcp_runtime_tools import build_mcp_runtime_tools_middleware
+    from deep_agent.aegra.mcp_runtime_tools import (
+        build_mcp_runtime_tools_middleware_from_declared,
+    )
+    from deep_agent.src.agent.config import agent_config
 
-    return [build_mcp_runtime_tools_middleware()]
+    orch = agent_config.get_orchestrator_config()
+    return [
+        build_mcp_runtime_tools_middleware_from_declared(
+            orch.get("tools") or [],
+            orch.get("mcps") or [],
+        )
+    ]
 
 
 def register_profiles_from_config(config: ProvidersFileConfig) -> None:

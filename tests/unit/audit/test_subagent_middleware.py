@@ -85,3 +85,28 @@ class TestSubagentMiddleware:
 
         assert result[0] is fallback
         assert isinstance(result[-1], McpRuntimeToolsMiddleware)
+
+    def test_runtime_middleware_uses_declared_yaml(self):
+        with (
+            patch(
+                "deep_agent.src.infrastructure.subagents.build_audit_middleware",
+                return_value=None,
+            ),
+            patch(
+                "deep_agent.src.infrastructure.subagents.build_opa_middleware",
+                return_value=None,
+            ),
+        ):
+            result = _subagent_middleware(
+                "researcher",
+                [],
+                [],
+                declared_tools=["search"],
+                declared_mcps=["acme-jira"],
+            )
+        from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
+
+        mw = result[-1]
+        assert isinstance(mw, McpRuntimeToolsMiddleware)
+        assert mw._allowlist == frozenset({"search"})
+        assert mw._mcp_names == frozenset({"acme-jira"})

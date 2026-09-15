@@ -226,6 +226,7 @@ class TestHandleMcpOauthCallback:
             ) as mock_resolver,
             patch("deep_agent.aegra.mcp.invalidate_mcp_tool_cache"),
             patch("deep_agent.aegra.graph.invalidate_graph_cache"),
+            patch("deep_agent.aegra.mcp.invalidate_authenticated_oauth_tools"),
         ):
             mock_settings.oauth_callback_url = (
                 "https://agent.example.com/mcp/oauth/callback"
@@ -368,6 +369,7 @@ class TestHandleMcpOauthCallback:
             ) as mock_resolver,
             patch("deep_agent.aegra.mcp.invalidate_mcp_tool_cache"),
             patch("deep_agent.aegra.graph.invalidate_graph_cache"),
+            patch("deep_agent.aegra.mcp.invalidate_authenticated_oauth_tools"),
         ):
             mock_settings.oauth_callback_url = (
                 "https://agent.example.com/mcp/oauth/callback"
@@ -512,6 +514,9 @@ class TestHandleMcpOauthCallback:
             ) as mock_resolver,
             patch("deep_agent.aegra.mcp.invalidate_mcp_tool_cache") as mock_tools,
             patch("deep_agent.aegra.graph.invalidate_graph_cache") as mock_graph,
+            patch(
+                "deep_agent.aegra.mcp.invalidate_authenticated_oauth_tools"
+            ) as mock_live,
         ):
             mock_settings.oauth_callback_url = (
                 "https://agent.example.com/mcp/oauth/callback"
@@ -532,6 +537,7 @@ class TestHandleMcpOauthCallback:
         assert b"Connected" in response.body
         mock_tools.assert_not_called()
         mock_graph.assert_not_called()
+        mock_live.assert_called_once_with("user-1", "oauth-mcp")
         mock_resolver.return_value.invalidate_cache.assert_called_once_with(
             "user-1", "oauth-mcp"
         )
