@@ -98,6 +98,31 @@ class TestSafeAinvoke:
         )
 
     @pytest.mark.asyncio
+    async def test_http_403_on_dcr_tool_stays_tool_error(self):
+        class Http403(Exception):
+            def __init__(self) -> None:
+                super().__init__("Forbidden")
+                self.response = MagicMock(status_code=403)
+
+        tool = _make_mock_tool(name="jira_search")
+        tool.metadata = {"mcp_server": "jira-mcp"}
+        tool.ainvoke = AsyncMock(side_effect=Http403())
+        wrapped = _wrap_single_tool(tool)
+        with (
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value={"jira-mcp": {"enabled": True, "auth_mode": "dcr"}},
+            ),
+            patch("deep_agent.aegra.mcp_token_store.McpTokenStore") as mock_store_cls,
+            patch("deep_agent.aegra.mcp_tool_auth.interrupt") as mock_int,
+        ):
+            result = await wrapped.ainvoke({"id": "call_403", "name": "jira_search"})
+        assert isinstance(result, ToolMessage)
+        assert "[TOOL_ERROR]" in result.content
+        mock_int.assert_not_called()
+        mock_store_cls.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_sso_403_with_metadata_stays_tool_error(self):
         tool = _make_mock_tool()
         tool.metadata = {"mcp_server": "gitlab-mcp"}

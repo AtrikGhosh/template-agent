@@ -1311,6 +1311,35 @@ class TestCreateAuthPlaceholderTool:
         mock_resolver.resolve.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_require_auth_does_not_claim_success_when_listing_empty(self):
+        """Token exists but tools/list produced nothing — do not say connected."""
+        tool = _create_auth_placeholder_tool(
+            "jira-mcp", {"description": "JIRA services"}
+        )
+        mock_resolver = MagicMock()
+        mock_resolver.resolve = AsyncMock(return_value="fresh-access-token")
+        with (
+            patch("deep_agent.aegra.mcp._current_user_id") as mock_ctx,
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value={"jira-mcp": {"auth_mode": "dcr"}},
+            ),
+            patch(
+                "deep_agent.aegra.mcp_auth.get_mcp_credential_resolver",
+                return_value=mock_resolver,
+            ),
+            patch(
+                "deep_agent.aegra.mcp.get_authenticated_oauth_mcp_tools",
+                new=AsyncMock(return_value=[]),
+            ),
+        ):
+            mock_ctx.get.return_value = "user-1"
+            result = await tool.coroutine(query="list my tickets")
+        assert "Successfully connected" not in result
+        assert "could not be loaded" in result
+        mock_resolver.resolve.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_require_auth_raises_when_refresh_failed(self):
         """A leftover refresh token must not skip re-auth after refresh fails."""
         from deep_agent.aegra.mcp_auth import NeedsAuthorization

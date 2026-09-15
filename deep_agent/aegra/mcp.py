@@ -768,9 +768,14 @@ def _create_auth_placeholder_tool(
                     "[%s] placeholder tool resolved auth — staying on this graph",
                     mcp_name,
                 )
-                await get_authenticated_oauth_mcp_tools(
+                live = await get_authenticated_oauth_mcp_tools(
                     user_id, server_names=[mcp_name]
                 )
+                if not live:
+                    return (
+                        f"Authenticated to {mcp_name} but live tools could not be "
+                        "loaded. Try the connect tool again."
+                    )
                 return (
                     f"Successfully connected to {mcp_name}. "
                     "Continue with the user's original request in this same run. "
@@ -1071,6 +1076,10 @@ async def get_authenticated_oauth_mcp_tools(
             if cached and cached[1] and (now - cached[0]) < _OAUTH_LIVE_TOOLS_TTL
             else None
         )
+        bearer = await _resolve_connection_token(name, entry, None, user_id)
+        if not bearer:
+            _oauth_live_tools.pop(cache_key, None)
+            continue
         if cached_live:
             collected.extend(cached_live)
             _apply_oauth_live_names(
@@ -1081,9 +1090,6 @@ async def get_authenticated_oauth_mcp_tools(
                     if getattr(t, "name", None)
                 ],
             )
-            continue
-        bearer = await _resolve_connection_token(name, entry, None, user_id)
-        if not bearer:
             continue
         mcp_prefix_name = entry.get("tool_prefix") or name
         connect_keys.append(name)
