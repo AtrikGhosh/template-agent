@@ -227,6 +227,33 @@ class TestAwrapModelCall:
             await mw.awrap_model_call(req, handler)
         handler.assert_awaited_once_with(req)
 
+    @pytest.mark.asyncio
+    async def test_keeps_tagged_placeholder_when_not_connected(self):
+        placeholder = _mcp_tool("mcp__jira_mcp", "jira-mcp")
+        req = _model_request([placeholder])
+        handler = AsyncMock(return_value="ok")
+        mw = McpRuntimeToolsMiddleware()
+        with (
+            patch(
+                "deep_agent.aegra.mcp._resolve_mcp_user_id",
+                return_value="user-1",
+            ),
+            patch("deep_agent.aegra.mcp._current_user_id"),
+            patch(
+                "deep_agent.aegra.mcp.get_authenticated_oauth_mcp_tools",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value={
+                    "jira-mcp": {"enabled": True, "auth_mode": "dcr"},
+                },
+            ),
+        ):
+            await mw.awrap_model_call(req, handler)
+        tools = handler.call_args[0][0].tools
+        assert [t.name for t in tools] == ["mcp__jira_mcp"]
+
 
 class TestAwrapToolCall:
     def setup_method(self):
@@ -288,6 +315,97 @@ class TestAwrapToolCall:
         assert listing.await_args.kwargs["server_names"] == ["jira-mcp"]
         overridden = handler.call_args[0][0]
         assert overridden.tool is live
+
+    @pytest.mark.asyncio
+    async def test_missing_live_tool_returns_error(self):
+        from deep_agent.aegra.mcp import record_oauth_live_names
+
+        req = _tool_request(name="jira_search", tool=None)
+        handler = AsyncMock(return_value="ran")
+        mw = McpRuntimeToolsMiddleware()
+        with (
+            patch(
+                "deep_agent.aegra.mcp._resolve_mcp_user_id",
+                return_value="user-1",
+            ),
+            patch("deep_agent.aegra.mcp._current_user_id"),
+            patch(
+                "deep_agent.aegra.mcp.get_authenticated_oauth_mcp_tools",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value={
+                    "jira-mcp": {"enabled": True, "auth_mode": "dcr"},
+                },
+            ),
+            patch("deep_agent.aegra.redis.cache_set_persistent", return_value=True),
+        ):
+            record_oauth_live_names("jira-mcp", ["jira_search"])
+            result = await mw.awrap_tool_call(req, handler)
+        handler.assert_not_called()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "not connected" in result.content
+
+    @pytest.mark.asyncio
+    async def test_listing_failure_returns_error(self):
+        from deep_agent.aegra.mcp import record_oauth_live_names
+
+        req = _tool_request(name="jira_search", tool=None)
+        handler = AsyncMock(return_value="ran")
+        mw = McpRuntimeToolsMiddleware()
+        with (
+            patch(
+                "deep_agent.aegra.mcp._resolve_mcp_user_id",
+                return_value="user-1",
+            ),
+            patch("deep_agent.aegra.mcp._current_user_id"),
+            patch(
+                "deep_agent.aegra.mcp.get_authenticated_oauth_mcp_tools",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value={
+                    "jira-mcp": {"enabled": True, "auth_mode": "dcr"},
+                },
+            ),
+            patch("deep_agent.aegra.redis.cache_set_persistent", return_value=True),
+        ):
+            record_oauth_live_names("jira-mcp", ["jira_search"])
+            result = await mw.awrap_tool_call(req, handler)
+        handler.assert_not_called()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "could not be loaded" in result.content
+
+    @pytest.mark.asyncio
+    async def test_missing_user_id_returns_error(self):
+        from deep_agent.aegra.mcp import record_oauth_live_names
+
+        req = _tool_request(name="jira_search", tool=None)
+        handler = AsyncMock(return_value="ran")
+        mw = McpRuntimeToolsMiddleware()
+        with (
+            patch(
+                "deep_agent.aegra.mcp._resolve_mcp_user_id",
+                return_value=None,
+            ),
+            patch(
+                "deep_agent.aegra.mcp._get_server_configs",
+                return_value={
+                    "jira-mcp": {"enabled": True, "auth_mode": "dcr"},
+                },
+            ),
+            patch("deep_agent.aegra.redis.cache_set_persistent", return_value=True),
+        ):
+            record_oauth_live_names("jira-mcp", ["jira_search"])
+            result = await mw.awrap_tool_call(req, handler)
+        handler.assert_not_called()
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "not connected" in result.content
 
     @pytest.mark.asyncio
     async def test_wraps_live_tool_with_guardian(self):

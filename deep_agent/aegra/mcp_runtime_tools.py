@@ -365,7 +365,10 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
         bound = list(request.tools or [])
         scope = None if self._mcp_names is None else self._mcp_names
         live_servers = {
-            server for tool in (*bound, *extra) if (server := _live_mcp_server(tool))
+            server
+            for tool in (*bound, *extra)
+            if not str(getattr(tool, "name", "") or "").startswith("mcp__")
+            and (server := _live_mcp_server(tool))
         }
         shown = []
         for tool in bound:
@@ -467,7 +470,12 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
         if user_id:
             _current_user_id.set(user_id)
         if not user_id:
-            return await handler(request)
+            return ToolMessage(
+                content=f"Tool '{name}' is not connected.",
+                name=name,
+                tool_call_id=tool_call_id,
+                status="error",
+            )
 
         try:
             live = await get_authenticated_oauth_mcp_tools(
@@ -479,14 +487,24 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
                 name,
                 exc_info=True,
             )
-            return await handler(request)
+            return ToolMessage(
+                content=f"Tool '{name}' could not be loaded.",
+                name=name,
+                tool_call_id=tool_call_id,
+                status="error",
+            )
 
         live_tool = next(
             (t for t in live if getattr(t, "name", "") == name),
             None,
         )
         if live_tool is None:
-            return await handler(request)
+            return ToolMessage(
+                content=f"Tool '{name}' is not connected.",
+                name=name,
+                tool_call_id=tool_call_id,
+                status="error",
+            )
         from deep_agent.src.guardrails.tool_proxy import wrap_tools
 
         return await handler(request.override(tool=wrap_tools([live_tool])[0]))

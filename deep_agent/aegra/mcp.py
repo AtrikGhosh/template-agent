@@ -1021,25 +1021,16 @@ def _oauth_live_cache_key(user_id: str, mcp_name: str) -> str:
     return f"{user_id}:{mcp_name}"
 
 
-def _oauth_catalog_redis_key(user_id: str, mcp_name: str) -> str:
-    return f"mcp_oauth_tools:{user_id}:{mcp_name}"
-
-
 def invalidate_authenticated_oauth_tools(
     user_id: str, mcp_name: str | None = None
 ) -> None:
-    """Drop live OAuth/DCR tool objects and Redis name catalog for *user_id*."""
-    from deep_agent.aegra.redis import cache_delete
-
+    """Drop live OAuth/DCR tool objects for *user_id*."""
     if mcp_name:
         _oauth_live_tools.pop(_oauth_live_cache_key(user_id, mcp_name), None)
-        cache_delete(_oauth_catalog_redis_key(user_id, mcp_name))
         return
     prefix = f"{user_id}:"
     for key in [k for k in _oauth_live_tools if k.startswith(prefix)]:
         _oauth_live_tools.pop(key, None)
-    for name in _get_server_configs():
-        cache_delete(_oauth_catalog_redis_key(user_id, name))
 
 
 def _is_oauth_placeholder_tool(tool: Any) -> bool:
@@ -1059,7 +1050,6 @@ async def get_authenticated_oauth_mcp_tools(
     401 still interrupts.
     """
     from deep_agent.aegra.mcp_tool_auth import wrap_mcp_tools_for_auth
-    from deep_agent.aegra.redis import cache_set
 
     servers = _filter_by_names(
         {
@@ -1142,11 +1132,6 @@ async def get_authenticated_oauth_mcp_tools(
             _oauth_live_tools[_oauth_live_cache_key(user_id, mcp_name)] = (
                 time.time(),
                 live,
-            )
-            cache_set(
-                _oauth_catalog_redis_key(user_id, mcp_name),
-                json.dumps(names),
-                int(_OAUTH_LIVE_TOOLS_TTL),
             )
             collected.extend(live)
 
