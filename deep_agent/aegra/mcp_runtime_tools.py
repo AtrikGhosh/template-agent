@@ -49,6 +49,25 @@ def _tool_call_args(tool_call: Any) -> dict[str, Any]:
     return args if isinstance(args, dict) else {}
 
 
+def _oauth_dcr_server_from_resource_call(
+    tool_call: Any,
+    scope: list[str] | frozenset[str] | None = None,
+) -> str | None:
+    """Return the oauth/dcr server in ``mcp_name`` for a host resource tool call."""
+    from deep_agent.aegra.mcp import _fenced_oauth_dcr_servers
+    from deep_agent.aegra.mcp_resource_tools import LIST_TOOL, READ_TOOL, TEMPLATES_TOOL
+
+    name, _ = _tool_call_name_and_id(tool_call)
+    if name not in {LIST_TOOL, TEMPLATES_TOOL, READ_TOOL}:
+        return None
+    mcp_name = _tool_call_args(tool_call).get("mcp_name")
+    if not isinstance(mcp_name, str) or not mcp_name:
+        return None
+    if mcp_name in _fenced_oauth_dcr_servers(scope):
+        return mcp_name
+    return None
+
+
 def _is_auth_continue(raw: Any) -> bool:
     if raw == "continue" or raw == {"type": "continue"}:
         return True
@@ -247,6 +266,12 @@ def _apply_live_hitl_decisions(
     return revised, messages
 
 
+class McpRuntimeToolsMiddlewareSlot(AgentMiddleware):
+    """No-op name slot so harness extra_middleware does not double-install."""
+
+    name = "McpRuntimeToolsMiddleware"
+
+
 class McpRuntimeToolsMiddleware(AgentMiddleware):
     """Attach authenticated OAuth/DCR MCP tools at call time (stable compiled graph)."""
 
@@ -356,14 +381,17 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
             return await handler(request)
 
         existing = {getattr(t, "name", "") for t in request.tools or []}
-        extra = [
-            t
-            for t in live
-            if getattr(t, "name", "") not in existing
-            and self._allowed(str(getattr(t, "name", "") or ""))
-        ]
         bound = list(request.tools or [])
         scope = None if self._mcp_names is None else self._mcp_names
+        extra = []
+        for t in live:
+            name = str(getattr(t, "name", "") or "")
+            if not name or name in existing or not self._allowed(name):
+                continue
+            owner = oauth_dcr_server_for_tool_name(name, scope=scope)
+            if owner is not None and _live_mcp_server(t) != owner:
+                continue
+            extra.append(t)
         live_servers = {
             server
             for tool in (*bound, *extra)
@@ -406,6 +434,8 @@ class McpRuntimeToolsMiddleware(AgentMiddleware):
         for idx, call in enumerate(tool_calls):
             name, _ = _tool_call_name_and_id(call)
             key = oauth_dcr_server_for_tool_name(name, scope=scope)
+            if not key:
+                key = _oauth_dcr_server_from_resource_call(call, scope=scope)
             if not key:
                 continue
             is_live = _is_live_oauth_dcr_name(name, scope=scope)

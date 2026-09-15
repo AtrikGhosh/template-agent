@@ -652,6 +652,26 @@ class TestAuthenticatedOauthMcpTools:
         mock_persistent.assert_not_called()
         assert "user-1:jira-mcp" not in mcp_mod._oauth_live_tools
 
+    @pytest.mark.asyncio
+    async def test_sets_user_id_before_listing(self):
+        servers = {
+            "jira-mcp": {
+                "enabled": True,
+                "auth_mode": "dcr",
+                "url": "http://jira/mcp",
+                "timeout": 5,
+            }
+        }
+        with (
+            patch.object(mcp_mod, "_get_server_configs", return_value=servers),
+            patch.object(
+                mcp_mod, "_resolve_connection_token", new=AsyncMock(return_value=None)
+            ),
+        ):
+            mcp_mod._current_user_id.set(None)
+            await mcp_mod.get_authenticated_oauth_mcp_tools("user-1")
+            assert mcp_mod._current_user_id.get() == "user-1"
+
     def test_invalidate_authenticated_oauth_tools_drops_process_cache(self):
         mcp_mod._oauth_live_tools["user-1:jira-mcp"] = (time.time(), [MagicMock()])
         mcp_mod.invalidate_authenticated_oauth_tools("user-1", "jira-mcp")

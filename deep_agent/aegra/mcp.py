@@ -473,9 +473,6 @@ def record_oauth_live_names(mcp_name: str, names: list[str]) -> None:
 
 
 def _catalog_servers_for_name(name: str) -> set[str]:
-    owners = set(_oauth_live_name_index.get(name) or ())
-    if owners:
-        return owners
     from deep_agent.aegra.redis import cache_get
 
     for key in _enabled_oauth_dcr_servers():
@@ -899,6 +896,13 @@ async def _connect_single_server(
             elif _is_auth_error(exc):
                 auth_mode = server_cfg.get("auth_mode", "sso")
                 if auth_mode in ("oauth", "dcr"):
+                    from deep_agent.aegra.mcp_tool_auth import (
+                        _forget_oauth_session,
+                        _is_http_401,
+                    )
+
+                    if _is_http_401(exc):
+                        await _forget_oauth_session(auth_key)
                     logger.info(
                         "[%s] MCP tool discovery auth failed (auth_mode=%s) "
                         "— returning auth placeholder tool (%s: %s)",
@@ -1051,6 +1055,9 @@ async def get_authenticated_oauth_mcp_tools(
     401 still interrupts.
     """
     from deep_agent.aegra.mcp_tool_auth import wrap_mcp_tools_for_auth
+
+    if user_id:
+        _current_user_id.set(user_id)
 
     servers = _filter_by_names(
         {
