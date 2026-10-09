@@ -351,7 +351,7 @@ class TestConnectSingleServer:
 
         assert len(tools) == 1
         assert tools[0].name == "mcp__jira_mcp"
-        mock_forget.assert_awaited_once_with("jira-mcp")
+        mock_forget.assert_awaited_once_with("jira-mcp", None)
 
     @pytest.mark.asyncio
     async def test_listing_403_keeps_oauth_token(self):

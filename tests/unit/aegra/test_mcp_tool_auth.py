@@ -110,13 +110,18 @@ class TestSafeAinvoke:
             mock_store_cls.return_value = store
             mock_settings.database_uri = "postgres://"
             mock_settings.agent_deployment_id = "agent-1"
+            from deep_agent.aegra.mcp import _mcp_sent_bearer
+
+            _mcp_sent_bearer.set("rejected-bearer")
             result = await wrapped.ainvoke({"id": "call_401", "name": "jira_search"})
         assert result == "ok"
         mock_int.assert_called_once()
         payload = mock_int.call_args[0][0]
         assert "mcp_auth_required" in payload
         assert "jira-mcp" in payload
-        store.delete_token.assert_awaited_once_with("agent-1", "user-1", "jira-mcp")
+        store.delete_token_if_access_matches.assert_awaited_once_with(
+            "agent-1", "user-1", "jira-mcp", "rejected-bearer"
+        )
         mock_res.return_value.invalidate_cache.assert_called_once_with(
             "user-1", "jira-mcp"
         )

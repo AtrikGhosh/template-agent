@@ -210,7 +210,9 @@ class TestListResources:
 
             assert exc.value.status_code == 401
             assert exc.value.detail["error"] == "authorization_required"
-            store.delete_token.assert_awaited_once_with("agent-1", "u1", "acme-jira")
+            store.delete_token_if_access_matches.assert_awaited_once_with(
+                "agent-1", "u1", "acme-jira", "tok"
+            )
         finally:
             _current_user_id.set(None)
 

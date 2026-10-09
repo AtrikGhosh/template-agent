@@ -75,6 +75,11 @@ _user_token_cache: dict[str, tuple[str, str]] = {}
 _mcp_tool_discovery: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "_mcp_tool_discovery", default=False
 )
+# Bearer placed on the in-flight MCP call. Left set when that call raises so
+# 401 cleanup can name the rejected token. Cleared on success and once read.
+_mcp_sent_bearer: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_mcp_sent_bearer", default=None
+)
 
 
 def set_mcp_auth_context(
@@ -91,6 +96,13 @@ def set_mcp_auth_context(
     _current_access_token.set(access_token)
     _current_refresh_token.set(refresh_token)
     _current_user_id.set(user_id)
+
+
+def take_mcp_sent_bearer() -> str | None:
+    """Return the bearer sent on the in-flight MCP call and clear it."""
+    bearer = _mcp_sent_bearer.get()
+    _mcp_sent_bearer.set(None)
+    return bearer
 
 
 def _resolve_mcp_user_id() -> str | None:
@@ -205,7 +217,13 @@ class _TokenInjectorInterceptor:
                 "TokenInjector: no token for MCP '%s' — call may fail auth",
                 self._mcp_name,
             )
-        return await handler(request)
+        _mcp_sent_bearer.set(access or None)
+        try:
+            result = await handler(request)
+        except BaseException:
+            raise
+        _mcp_sent_bearer.set(None)
+        return result
 
 
 def _get_mcp_breaker() -> CircuitBreaker:
@@ -739,6 +757,21 @@ def _build_server_config(
     return config
 
 
+def _bearer_from_config(config: dict[str, Any]) -> str | None:
+    """Return the bearer already placed on a connection config, if any."""
+    headers = config.get("headers")
+    if not isinstance(headers, dict):
+        return None
+    auth = headers.get("Authorization")
+    if not isinstance(auth, str):
+        return None
+    prefix = "Bearer "
+    if not auth.startswith(prefix):
+        return None
+    token = auth[len(prefix) :].strip()
+    return token or None
+
+
 def _create_auth_placeholder_tool(
     mcp_name: str, server_cfg: dict[str, Any] | None = None
 ) -> Any:
@@ -895,6 +928,7 @@ async def _connect_single_server(
             breaker.record_failure()
             logger.error(f"[{name}] timeout after {timeout}s ({config.get('url')})")
         except Exception as exc:
+            failed_bearer = take_mcp_sent_bearer() or _bearer_from_config(config)
             if _is_needs_authorization(exc):
                 logger.info(
                     "[%s] MCP OAuth required — returning auth placeholder tool (%s: %s)",
@@ -915,7 +949,7 @@ async def _connect_single_server(
                     )
 
                     if _is_http_401(exc):
-                        await _forget_oauth_session(auth_key)
+                        await _forget_oauth_session(auth_key, failed_bearer)
                     logger.info(
                         "[%s] MCP tool discovery auth failed (auth_mode=%s) "
                         "— returning auth placeholder tool (%s: %s)",

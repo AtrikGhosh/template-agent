@@ -163,7 +163,7 @@ async def mcp_session(
             if _is_http_401(exc):
                 if user_id:
                     _current_user_id.set(user_id)
-                await _forget_oauth_session(mcp_name)
+                await _forget_oauth_session(mcp_name, bearer)
                 raise _authorization_required(mcp_name) from None
         raise
 

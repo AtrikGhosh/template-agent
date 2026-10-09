@@ -68,8 +68,15 @@ def _oauth_dcr_http_auth_required(
     )
 
 
-async def _forget_oauth_session(mcp_name: str) -> None:
-    """Drop the stored token so Continue cannot reuse a rejected bearer."""
+async def _forget_oauth_session(
+    mcp_name: str, failed_bearer: str | None = None
+) -> None:
+    """Drop the rejected bearer so Continue cannot reuse it.
+
+    Redis is deleted only when the stored token is still *failed_bearer*.
+    A newer token written by another pod is left in place. This pod's memory
+    copy and live tools are cleared either way.
+    """
     from deep_agent.aegra.mcp import (
         _resolve_mcp_user_id,
         invalidate_authenticated_oauth_tools,
@@ -81,9 +88,15 @@ async def _forget_oauth_session(mcp_name: str) -> None:
     user_id = _resolve_mcp_user_id()
     if not user_id:
         return
-    await McpTokenStore(settings.database_uri).delete_token(
-        settings.agent_deployment_id, user_id, mcp_name
-    )
+    if failed_bearer:
+        await McpTokenStore(settings.database_uri).delete_token_if_access_matches(
+            settings.agent_deployment_id, user_id, mcp_name, failed_bearer
+        )
+    else:
+        logger.warning(
+            "MCP 401 for '%s' had no sent bearer — leaving the Redis token in place",
+            mcp_name,
+        )
     get_mcp_credential_resolver().invalidate_cache(user_id, mcp_name)
     invalidate_authenticated_oauth_tools(user_id, mcp_name)
 
@@ -168,9 +181,12 @@ def _make_safe_ainvoke(target_tool: Any) -> Any:
         from langchain_core.messages import ToolMessage
         from langgraph.errors import GraphBubbleUp
 
+        from deep_agent.aegra.mcp import take_mcp_sent_bearer
+
         try:
             return await original_ainvoke(tool_input, config, **kwargs)
         except NeedsAuthorization as exc:
+            take_mcp_sent_bearer()
             logger.info(
                 "MCP auth required for '%s' — interrupting run",
                 exc.mcp_name,
@@ -178,15 +194,17 @@ def _make_safe_ainvoke(target_tool: Any) -> Any:
             interrupt(_mcp_auth_interrupt_payload(exc))
             return await original_ainvoke(tool_input, config, **kwargs)
         except GraphBubbleUp:
+            take_mcp_sent_bearer()
             raise
         except Exception as exc:
+            failed_bearer = take_mcp_sent_bearer()
             reauth = _oauth_dcr_http_auth_required(target_tool, exc)
             if reauth is not None:
                 logger.info(
                     "MCP HTTP auth failed for '%s' — dropping token and interrupting",
                     reauth.mcp_name,
                 )
-                await _forget_oauth_session(reauth.mcp_name)
+                await _forget_oauth_session(reauth.mcp_name, failed_bearer)
                 interrupt(_mcp_auth_interrupt_payload(reauth))
                 return await original_ainvoke(tool_input, config, **kwargs)
             tool_name = getattr(target_tool, "name", "unknown")
