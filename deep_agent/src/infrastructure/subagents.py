@@ -448,18 +448,18 @@ def _resolve_and_enforce_subagent_tools(
     Builds the capability manifest from declared ``tools:``/``mcps:``,
     adds MCP resource-read tools, then wraps with the dispatch-time gate.
     """
+    from deep_agent.aegra.mcp import resolve_declared_mcp_tools
     from deep_agent.aegra.mcp_resource_tools import get_mcp_resource_tools
     from deep_agent.aegra.mcp_tool_auth import wrap_mcp_tools_for_auth
     from deep_agent.src.capability import (
         enforce_capability,
         resolve_capability_manifest,
     )
-    from deep_agent.aegra.mcp import resolve_declared_mcp_tools
-    
+
     tool_names: list[str] | None = agent_cfg.get("tools")
     mcp_names: list[str] = agent_cfg.get("mcps", [])
     scoped_tools = _filter_tools_by_mcp_names(tools, mcp_names)
-    
+
     if tool_names is not None and not tool_names:
         # Explicit tools: [] is the security rule: no MCP tools, no Connect placeholder.
         declared_bound = []
@@ -544,7 +544,9 @@ def _build_default_subagent(
         resolved_tools,
         fallback_mw,
         declared_tools=agent_cfg.get("tools") or [],
-        declared_mcps=[] if "tools" in agent_cfg and not agent_cfg.get("tools") else agent_cfg.get("mcps") or [],
+        declared_mcps=[]
+        if "tools" in agent_cfg and not agent_cfg.get("tools")
+        else agent_cfg.get("mcps") or [],
     )
     if middleware:
         subagent_params["middleware"] = middleware
@@ -609,7 +611,9 @@ def _build_compiled_subagent(
         resolved_tools,
         fallback_mw,
         declared_tools=agent_cfg.get("tools") or [],
-        declared_mcps=[] if "tools" in agent_cfg and not agent_cfg.get("tools") else agent_cfg.get("mcps") or [],
+        declared_mcps=[]
+        if "tools" in agent_cfg and not agent_cfg.get("tools")
+        else agent_cfg.get("mcps") or [],
     )
     if middleware:
         create_kwargs["middleware"] = middleware

@@ -62,6 +62,7 @@ class TestBuildMiddlewareListAudit:
             result = build_middleware_list(resolved)
         assert isinstance(result[0], AuditMiddleware)
         from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
+
         assert isinstance(result[0], AuditMiddleware)
         from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
 

@@ -506,8 +506,9 @@ async def agent(runtime: ServerRuntime) -> Any:
         mcp_tool_names=frozenset(t.name for t in mcp_tools)
         | frozenset(t.name for t in resource_tools),
         declared_tools=tool_names,
-        declared_mcps=[] if tool_names is not None and not tool_names else mcp_server_names,
-
+        declared_mcps=[]
+        if tool_names is not None and not tool_names
+        else mcp_server_names,
     )
     memory = resolve_memory_param(resolved_mw) if user_memory_enabled else None
 

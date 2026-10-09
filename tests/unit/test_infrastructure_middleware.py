@@ -48,7 +48,6 @@ class TestBuildMiddlewareList:
 
         from deep_agent.aegra.mcp_runtime_tools import McpRuntimeToolsMiddleware
 
-        
         # Safety + identity + datetime + image sanitize + runtime DCR tools.
         assert len(result) == 5
         assert type(result[0]).__name__ == "GeminiSafetyLogMiddleware"
