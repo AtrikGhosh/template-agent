@@ -132,7 +132,9 @@ def _graph_fingerprint(
     model_flag = f"temp={temperature},max_tokens={max_tokens}"
     mcp_flag = ",".join(sorted(mcp_names or []))
     resources_flag = ",".join(sorted(resource_uris or []))
-    declared_flag = ",".join(sorted(declared_tools or []))
+    declared_flag = (
+        "absent" if declared_tools is None else ",".join(sorted(declared_tools))
+    )
     raw = (
         f"{model_name}\0{system_prompt}\0{','.join(sorted(tool_names))}"
         f"\0{hitl_flag}\0{model_flag}\0{mcp_flag}\0{resources_flag}"
@@ -484,7 +486,7 @@ async def agent(runtime: ServerRuntime) -> Any:
         max_tokens=int(orch_max_tokens) if orch_max_tokens else None,
         mcp_names=mcp_server_names or None,
         resource_uris=orchestrator_cfg.get("resources") or None,
-        declared_tools=tool_names or None,
+        declared_tools=tool_names,
     )
     now = time.time()
     graph_ttl = float(agent_config.get_cache_config().graph.ttl)

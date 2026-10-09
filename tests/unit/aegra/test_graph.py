@@ -833,7 +833,7 @@ class TestGraphHelpers:
         fp_both = _graph_fingerprint(**base, declared_tools=["create", "search"])
         fp_both_rev = _graph_fingerprint(**base, declared_tools=["search", "create"])
 
-        assert fp_none == fp_empty
+        assert fp_none != fp_empty
         assert fp_search != fp_none
         assert fp_both != fp_search
         assert fp_both == fp_both_rev

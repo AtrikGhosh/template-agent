@@ -165,42 +165,54 @@ class TestListResources:
 
         session = MagicMock()
         session.list_resources = AsyncMock(side_effect=Http401())
+        from deep_agent.aegra.mcp import _current_user_id
 
-        with (
-            patch(
-                "deep_agent.aegra.mcp_host._get_server_configs",
-                return_value={
-                    "acme-jira": _server_cfg(auth=True, auth_mode="dcr"),
-                },
-            ),
-            patch(
-                "deep_agent.aegra.mcp_host._resolve_connection_token",
-                new_callable=AsyncMock,
-                return_value="tok",
-            ),
-            patch(
-                "deep_agent.aegra.mcp_host.MultiServerMCPClient",
-            ) as mock_client_cls,
-            patch(
-                "deep_agent.aegra.mcp_tool_auth._forget_oauth_session",
-                new=AsyncMock(),
-            ) as mock_forget,
-            patch(
-                "deep_agent.aegra.mcp_auth.get_mcp_credential_resolver",
-            ) as mock_resolver,
-            pytest.raises(HTTPException) as exc,
-        ):
-            client = MagicMock()
-            client.session = lambda _name: _fake_session(session)
-            mock_client_cls.return_value = client
-            mock_resolver.return_value.connect_url.return_value = (
-                "/mcp/acme-jira/connect"
-            )
-            await list_resources("acme-jira", user_id="u1", sso_token=None)
+        store = AsyncMock()
+        try:
+            with (
+                patch(
+                    "deep_agent.aegra.mcp_host._get_server_configs",
+                    return_value={
+                        "acme-jira": _server_cfg(auth=True, auth_mode="dcr"),
+                    },
+                ),
+                patch(
+                    "deep_agent.aegra.mcp_host._resolve_connection_token",
+                    new_callable=AsyncMock,
+                    return_value="tok",
+                ),
+                patch(
+                    "deep_agent.aegra.mcp_host.MultiServerMCPClient",
+                ) as mock_client_cls,
+                patch(
+                    "deep_agent.aegra.mcp_auth.get_mcp_credential_resolver",
+                ) as mock_resolver,
+                patch(
+                    "deep_agent.aegra.mcp_token_store.McpTokenStore",
+                ) as mock_store_cls,
+                patch(
+                    "deep_agent.aegra.mcp.invalidate_authenticated_oauth_tools",
+                ),
+                patch("deep_agent.src.settings.settings") as mock_settings,
+                pytest.raises(HTTPException) as exc,
+            ):
+                client = MagicMock()
+                client.session = lambda _name: _fake_session(session)
+                mock_client_cls.return_value = client
+                mock_resolver.return_value.connect_url.return_value = (
+                    "/mcp/acme-jira/connect"
+                )
+                mock_resolver.return_value.invalidate_cache = MagicMock()
+                mock_store_cls.return_value = store
+                mock_settings.database_uri = "postgres://"
+                mock_settings.agent_deployment_id = "agent-1"
+                await list_resources("acme-jira", user_id="u1", sso_token=None)
 
-        assert exc.value.status_code == 401
-        assert exc.value.detail["error"] == "authorization_required"
-        mock_forget.assert_awaited_once_with("acme-jira")
+            assert exc.value.status_code == 401
+            assert exc.value.detail["error"] == "authorization_required"
+            store.delete_token.assert_awaited_once_with("agent-1", "u1", "acme-jira")
+        finally:
+            _current_user_id.set(None)
 
     @pytest.mark.asyncio
     async def test_dcr_http_403_does_not_forget_token(self):

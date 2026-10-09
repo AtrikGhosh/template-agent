@@ -81,10 +81,10 @@ async def _forget_oauth_session(mcp_name: str) -> None:
     user_id = _resolve_mcp_user_id()
     if not user_id:
         return
-    get_mcp_credential_resolver().invalidate_cache(user_id, mcp_name)
     await McpTokenStore(settings.database_uri).delete_token(
         settings.agent_deployment_id, user_id, mcp_name
     )
+    get_mcp_credential_resolver().invalidate_cache(user_id, mcp_name)
     invalidate_authenticated_oauth_tools(user_id, mcp_name)
 
 

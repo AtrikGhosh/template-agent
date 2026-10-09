@@ -200,14 +200,12 @@ class TestLoadSubagents:
             available_tools = [mock_tool1, mock_tool2]
             result = load_subagents(tools=available_tools)
             assert result == [mock_subagent]
-            _assert_default_subagent_call(
-                mock_sa,
-                name="analyst",
-                model=mock_model,
-                description="Analyst",
-                system_prompt="Prompt",
-            )
-            built_tools = mock_sa.call_args.kwargs["tools"]
+            kwargs = mock_sa.call_args.kwargs
+            assert kwargs["name"] == "analyst"
+            assert kwargs["model"] == mock_model
+            assert kwargs["description"] == "Analyst"
+            assert kwargs["system_prompt"] == "Prompt"
+            built_tools = kwargs["tools"]
             assert [t.name for t in built_tools] == ["calculate_bmi", "search_web"]
             assert all(isinstance(t, CapabilityToolProxy) for t in built_tools)
             runtime = next(

@@ -116,7 +116,7 @@ class TestSafeAinvoke:
         payload = mock_int.call_args[0][0]
         assert "mcp_auth_required" in payload
         assert "jira-mcp" in payload
-        store.delete_token.assert_awaited_once()
+        store.delete_token.assert_awaited_once_with("agent-1", "user-1", "jira-mcp")
         mock_res.return_value.invalidate_cache.assert_called_once_with(
             "user-1", "jira-mcp"
         )

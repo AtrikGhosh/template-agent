@@ -560,15 +560,53 @@ class TestResolveMcpUserId:
         with patch("langgraph.config.get_config", side_effect=RuntimeError("no graph")):
             assert mcp_mod._resolve_mcp_user_id() == "jwt-sub"
 
-    def test_falls_back_to_langgraph_auth_identity(self):
+    def test_ignores_langgraph_auth_user_id_alone(self):
         mcp_mod._current_user_id.set(None)
         with patch(
             "langgraph.config.get_config",
             return_value={
-                "configurable": {"user_id": "bff-username", "user_identity": "jwt-sub"}
+                "configurable": {"langgraph_auth_user_id": "caller-sub"},
+            },
+        ):
+            assert mcp_mod._resolve_mcp_user_id() is None
+
+    def test_ignores_langgraph_auth_user_id(self):
+        mcp_mod._current_user_id.set(None)
+        with patch(
+            "langgraph.config.get_config",
+            return_value={
+                "configurable": {
+                    "user_id": "bff-username",
+                    "langgraph_auth_user_id": "caller-sub",
+                    "langgraph_auth_user": {"identity": "jwt-sub"},
+                }
             },
         ):
             assert mcp_mod._resolve_mcp_user_id() == "jwt-sub"
+
+    def test_falls_back_to_langgraph_auth_user(self):
+        mcp_mod._current_user_id.set(None)
+        with patch(
+            "langgraph.config.get_config",
+            return_value={
+                "configurable": {"langgraph_auth_user": {"identity": "jwt-sub"}}
+            },
+        ):
+            assert mcp_mod._resolve_mcp_user_id() == "jwt-sub"
+
+    def test_ignores_caller_user_identity_and_metadata(self):
+        mcp_mod._current_user_id.set(None)
+        with patch(
+            "langgraph.config.get_config",
+            return_value={
+                "configurable": {"user_identity": "caller-sub"},
+                "metadata": {
+                    "user_identity": "caller-sub",
+                    "langgraph_auth_user_id": "caller-sub",
+                },
+            },
+        ):
+            assert mcp_mod._resolve_mcp_user_id() is None
 
     def test_ignores_bff_user_id(self):
         mcp_mod._current_user_id.set(None)

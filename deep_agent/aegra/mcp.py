@@ -97,10 +97,11 @@ def _resolve_mcp_user_id() -> str | None:
     """JWT ``sub`` used to key per-user MCP OAuth tokens.
 
     Prefer the factory ContextVar (set from Aegra ``user.identity``). Fall back
-    to LangGraph auth identity on the run config so nested subagent tool calls
-    still resolve Redis tokens when the ContextVar is empty. Do not use BFF
-    ``configurable.user_id`` / ``X-User-ID`` — that is preferred_username, not
-    the token-store key.
+    to ``configurable.langgraph_auth_user`` so nested subagent tool calls still
+    resolve Redis tokens when the ContextVar is empty. Ignore caller
+    ``metadata``, ``user_identity``, and ``langgraph_auth_user_id``. Do not use
+    BFF ``configurable.user_id`` / ``X-User-ID`` — that is preferred_username,
+    not the token-store key.
     """
     uid = _current_user_id.get()
     if uid:
@@ -113,22 +114,17 @@ def _resolve_mcp_user_id() -> str | None:
         return None
     if not isinstance(config, dict):
         return None
-    bags = (config.get("configurable"), config.get("metadata"))
-    for bag in bags:
-        if not isinstance(bag, dict):
-            continue
-        for key in ("langgraph_auth_user_id", "user_identity"):
-            val = bag.get(key)
-            if val:
-                return str(val)
-        user = bag.get("langgraph_auth_user")
-        if user is None:
-            continue
-        identity = getattr(user, "identity", None)
-        if identity:
-            return str(identity)
-        if isinstance(user, dict) and user.get("identity"):
-            return str(user["identity"])
+    configurable = config.get("configurable")
+    if not isinstance(configurable, dict):
+        return None
+    user = configurable.get("langgraph_auth_user")
+    if user is None:
+        return None
+    identity = getattr(user, "identity", None)
+    if identity:
+        return str(identity)
+    if isinstance(user, dict) and user.get("identity"):
+        return str(user["identity"])
     return None
 
 

@@ -173,7 +173,9 @@ class TestListResourcesTool:
             patch(
                 "langgraph.config.get_config",
                 return_value={
-                    "configurable": {"langgraph_auth_user_id": "jwt-sub-1"},
+                    "configurable": {
+                        "langgraph_auth_user": {"identity": "jwt-sub-1"},
+                    },
                 },
             ),
         ):
