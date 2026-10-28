@@ -512,6 +512,32 @@ def _detect_interrupt(run_state: dict) -> bool:
     )
 
 
+_QUESTION_STAND_IN = "No preference. Continue with the most reasonable choice."
+
+
+def _resume_payload(run_state: dict) -> str | dict[str, Any]:
+    """Answer a user question with a stand-in. Approve any other pause."""
+    raw = run_state.get("__interrupt__")
+    if not raw:
+        raw = run_state.get("values", {}).get("__interrupt__")
+    value: Any = None
+    if isinstance(raw, list) and raw:
+        first = raw[0]
+        value = (
+            first.get("value")
+            if isinstance(first, dict) and "value" in first
+            else first
+        )
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = None
+    if isinstance(value, dict) and value.get("type") == "user_question":
+        return _QUESTION_STAND_IN
+    return {"decisions": [{"type": "approve"}]}
+
+
 @router.get("/thread-tool-calls/{thread_id}")
 async def get_thread_tool_calls(
     thread_id: str,
@@ -594,10 +620,16 @@ async def eval_run(
 
             if body.auto_approve:
                 for _ in range(MAX_HITL_APPROVALS):
-                    log.info("Auto-approving HITL interrupt for thread %s", thread_id)
+                    resume = _resume_payload(run_state)
+                    if isinstance(resume, str):
+                        log.info("Answering user question for thread %s", thread_id)
+                    else:
+                        log.info(
+                            "Auto-approving HITL interrupt for thread %s", thread_id
+                        )
                     approve_body = {
                         "assistant_id": ASSISTANT_ID,
-                        "command": {"resume": {"decisions": [{"type": "approve"}]}},
+                        "command": {"resume": resume},
                     }
                     run_state = await _run_and_get_state(
                         client, thread_id, approve_body
