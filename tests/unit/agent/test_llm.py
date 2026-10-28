@@ -36,6 +36,7 @@ class TestCreateModel:
                     max_retries=2,
                     streaming=True,
                     safety_settings=safety_settings,
+                    include_thoughts=True,
                 )
 
     def test_create_claude_model(self):
@@ -57,7 +58,48 @@ class TestCreateModel:
                     max_tokens=8192,
                     max_retries=2,
                     streaming=True,
+                    model_kwargs={
+                        "thinking": {"type": "enabled", "budget_tokens": 4096},
+                    },
                 )
+
+    def test_claude_thinking_budget_is_half_the_reply_limit(self):
+        """A smaller reply limit keeps half for the answer, capped at 4096."""
+        mock_creds = MagicMock()
+
+        with patch(
+            "deep_agent.src.agent.llm.get_service_account_credentials"
+        ) as mock_get_creds:
+            mock_get_creds.return_value = (mock_creds, "test-project")
+
+            with patch("deep_agent.src.agent.llm.ChatAnthropicVertex") as mock_chat:
+                create_model("claude-sonnet-4", temperature=0.0, max_output_tokens=4096)
+                mock_chat.assert_called_once_with(
+                    model="claude-sonnet-4",
+                    project="test-project",
+                    location="us-east5",
+                    credentials=mock_creds,
+                    max_tokens=4096,
+                    max_retries=2,
+                    streaming=True,
+                    model_kwargs={
+                        "thinking": {"type": "enabled", "budget_tokens": 2048},
+                    },
+                )
+
+    def test_claude_thinking_stays_off_when_half_the_limit_is_too_small(self):
+        """Below 1024 tokens Claude rejects a thinking budget, so thinking is omitted."""
+        mock_creds = MagicMock()
+
+        with patch(
+            "deep_agent.src.agent.llm.get_service_account_credentials"
+        ) as mock_get_creds:
+            mock_get_creds.return_value = (mock_creds, "test-project")
+
+            with patch("deep_agent.src.agent.llm.ChatAnthropicVertex") as mock_chat:
+                create_model("claude-sonnet-4", temperature=0.0, max_output_tokens=512)
+                kwargs = mock_chat.call_args.kwargs
+                assert "thinking" not in kwargs["model_kwargs"]
 
     @pytest.mark.parametrize(
         "invalid_name",

@@ -119,6 +119,12 @@ def _create_vertex_model(
         )
 
         if is_claude:
+            thinking_budget = min(4096, max_output_tokens // 2)
+            claude_kwargs: dict = {}
+            if thinking_budget >= 1024:
+                claude_kwargs = {
+                    "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
+                }
             return ChatAnthropicVertex(
                 model=model_name,
                 project=project,
@@ -128,6 +134,7 @@ def _create_vertex_model(
                 max_tokens=max_output_tokens,
                 max_retries=2,
                 streaming=True,
+                model_kwargs=claude_kwargs,
             )
         else:
             return ChatGoogleGenerativeAI(
@@ -139,6 +146,7 @@ def _create_vertex_model(
                 max_retries=2,
                 streaming=True,
                 safety_settings=safety_settings,
+                include_thoughts=True,
             )
 
     except (ValueError, LLMError):
