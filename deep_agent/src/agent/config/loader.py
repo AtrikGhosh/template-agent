@@ -161,12 +161,9 @@ def _load_jsonc(path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(_strip_jsonc_comments(raw)))
 
 
-# AI Factory writes Atlan as DCR. A secret variable on the agent Environment
-# step is injected into the pod as this env var; when it is set, Atlan uses
-# the key and does not start a DCR connect flow.
+# Set both on the agent in AI Factory. The URL is not stored in mcp.json.
 _ATLAN_API_KEY_ENV = "ATLAN_MCP_API_KEY"
 _ATLAN_MCP_URL_ENV = "ATLAN_MCP_URL"
-_DEFAULT_ATLAN_MCP_URL = "https://mcp.atlan.com/mcp"
 
 # Config directory path - read from CONFIG_PATH env var for base image pattern
 # Falls back to repo-root config/agent/ for backward compatibility
@@ -671,17 +668,21 @@ class AgentConfig:
         url = str(cfg.get("url", "")).lower()
         return "atlan" in name.lower() or "atlan.com" in url
 
-    def _apply_atlan_api_key_from_env(self) -> None:
-        """Use ATLAN_MCP_API_KEY for Atlan instead of the DCR block AIF writes.
+    @staticmethod
+    def _atlan_mcp_url() -> str:
+        """Return the Atlan MCP URL from the process environment."""
+        return os.environ.get(_ATLAN_MCP_URL_ENV, "").strip().strip('"')
 
-        AI Factory materializes the registry Atlan package as ``auth_mode: dcr``
-        and mounts that ``mcp.json`` over the image. The Environment step stores
-        a secret variable in Vault and injects it as a pod env var. When
-        ``ATLAN_MCP_API_KEY`` is set, every Atlan server is switched to
-        ``api_key``. If the agent did not select the Atlan package, the server
-        is added and included in a non-empty ``mcps`` list.
+    def _apply_atlan_api_key_from_env(self) -> None:
+        """Connect Atlan MCP when AI Factory supplies the URL and API key.
+
+        Connecting other MCP servers replaces ``mcp.json``. Atlan is added
+        only when both ``ATLAN_MCP_URL`` and ``ATLAN_MCP_API_KEY`` are set,
+        then granted to the orchestrator and every subagent that already
+        lists MCP servers.
         """
-        if not self._atlan_api_key():
+        url = self._atlan_mcp_url()
+        if not self._atlan_api_key() or not url:
             return
 
         atlan_names: list[str] = []
@@ -691,18 +692,17 @@ class AgentConfig:
                 cfg["auth"] = True
                 cfg["auth_mode"] = "api_key"
                 cfg["auth_env_var"] = _ATLAN_API_KEY_ENV
+                cfg["url"] = url
                 cfg.pop("oauth", None)
                 atlan_names.append(name)
                 logger.info(
-                    "Atlan MCP '%s' uses %s instead of DCR",
+                    "Atlan MCP '%s' uses %s at %s",
                     name,
                     _ATLAN_API_KEY_ENV,
+                    url,
                 )
 
         if not atlan_names:
-            url = (
-                os.environ.get(_ATLAN_MCP_URL_ENV, "").strip() or _DEFAULT_ATLAN_MCP_URL
-            )
             self._mcp_servers["atlan-mcp"] = {
                 "url": url,
                 "transport": "streamable_http",
@@ -713,8 +713,7 @@ class AgentConfig:
                 "ssl_verify": True,
                 "timeout": 30,
                 "description": (
-                    "Atlan MCP. Uses ATLAN_MCP_API_KEY from the environment "
-                    "instead of DCR."
+                    "Atlan MCP. URL from ATLAN_MCP_URL and key from ATLAN_MCP_API_KEY."
                 ),
             }
             atlan_names.append("atlan-mcp")
@@ -724,10 +723,19 @@ class AgentConfig:
                 url,
             )
 
-        mcps = self._orchestrator.get("mcps")
-        if not mcps:
+        self._grant_atlan(self._orchestrator, atlan_names)
+        for subagent in self._subagents.values():
+            self._grant_atlan(subagent, atlan_names)
+
+    def _grant_atlan(self, config: dict[str, Any], atlan_names: list[str]) -> None:
+        """Add Atlan to an agent that already names its MCP servers.
+
+        An empty ``mcps`` list means every enabled server, including Atlan.
+        """
+        mcps = config.get("mcps")
+        if not isinstance(mcps, list) or not mcps:
             return
-        if any(self._server_is_atlan(name, {}) for name in mcps):
+        if any(self._server_is_atlan(str(name), {}) for name in mcps):
             return
         mcps.extend(atlan_names)
 

@@ -47,6 +47,7 @@ class TestAtlanApiKeyFromEnv:
 
     def test_dcr_server_switches_to_api_key(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ATLAN_MCP_API_KEY", "test-key")
+        monkeypatch.setenv("ATLAN_MCP_URL", "https://redhat.atlan.com/mcp")
         _write_config(
             tmp_path,
             _PROMPT,
@@ -78,6 +79,7 @@ class TestAtlanApiKeyFromEnv:
     ):
         """A mounted DCR Atlan server still sends ATLAN_MCP_API_KEY."""
         monkeypatch.setenv("ATLAN_MCP_API_KEY", "test-key")
+        monkeypatch.setenv("ATLAN_MCP_URL", "https://mcp.atlan.com/mcp")
         _write_config(
             tmp_path,
             _PROMPT,
@@ -167,3 +169,88 @@ class TestAtlanApiKeyFromEnv:
         assert cfg.get_mcp_servers()["atlan-mcp"]["auth_mode"] == "api_key"
         assert cfg.get_mcp_servers()["atlan-mcp"]["url"] == "https://mcp.atlan.com/mcp"
         assert cfg.get_orchestrator_config()["mcps"] == ["dataverse-mcp", "atlan-mcp"]
+
+    def test_missing_url_does_not_add_atlan(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ATLAN_MCP_API_KEY", "test-key")
+        monkeypatch.delenv("ATLAN_MCP_URL", raising=False)
+        _write_config(
+            tmp_path,
+            _PROMPT_WITHOUT_ATLAN,
+            {
+                "dataverse-mcp": {
+                    "url": "https://mcp.dataverse.redhat.com/mcp/",
+                    "auth_mode": "sso",
+                    "enabled": True,
+                }
+            },
+        )
+
+        servers = _load(tmp_path).get_mcp_servers()
+
+        assert "atlan-mcp" not in servers
+
+    def test_url_env_overrides_mcp_json_url(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ATLAN_MCP_API_KEY", "test-key")
+        monkeypatch.setenv("ATLAN_MCP_URL", "https://redhat.atlan.com/mcp")
+        _write_config(
+            tmp_path,
+            _PROMPT,
+            {
+                "atlan-mcp": {
+                    "url": "https://mcp.atlan.com/mcp",
+                    "transport": "streamable_http",
+                    "enabled": True,
+                    "auth": True,
+                    "auth_mode": "dcr",
+                    "oauth": {
+                        "registration_endpoint": "https://mcp.atlan.com/oauth/register",
+                        "authorization_endpoint": "https://mcp.atlan.com/oauth/authorize",
+                        "token_endpoint": "https://mcp.atlan.com/oauth/token",
+                    },
+                }
+            },
+        )
+
+        servers = _load(tmp_path).get_mcp_servers()
+
+        assert servers["atlan-mcp"]["url"] == "https://redhat.atlan.com/mcp"
+        assert servers["atlan-mcp"]["auth_mode"] == "api_key"
+        assert "oauth" not in servers["atlan-mcp"]
+
+    def test_aif_mcp_json_still_grants_atlan_to_subagents(self, tmp_path, monkeypatch):
+        """A mounted mcp.json that only has Dataverse still connects Atlan."""
+        monkeypatch.setenv("ATLAN_MCP_API_KEY", "test-key")
+        monkeypatch.setenv("ATLAN_MCP_URL", "https://tenant.example/mcp")
+        _write_config(
+            tmp_path,
+            _PROMPT_WITHOUT_ATLAN,
+            {
+                "dataverse-mcp": {
+                    "url": "https://mcp.dataverse.redhat.com/mcp/",
+                    "transport": "streamable_http",
+                    "enabled": True,
+                    "auth": True,
+                    "auth_mode": "sso",
+                }
+            },
+        )
+        subagents = tmp_path / "agent" / "subagents"
+        subagents.mkdir()
+        (subagents / "catalog.md").write_text(
+            "---\n"
+            "name: catalog\n"
+            "model: claude-sonnet-4-6@default\n"
+            "mcps:\n"
+            "  - dataverse-mcp\n"
+            "---\n\n"
+            "Catalog.\n"
+        )
+
+        cfg = _load(tmp_path)
+
+        assert cfg.get_mcp_servers()["atlan-mcp"]["url"] == "https://tenant.example/mcp"
+        assert cfg.get_orchestrator_config()["mcps"] == ["dataverse-mcp", "atlan-mcp"]
+        assert cfg.get_all_subagent_configs()["catalog"]["mcps"] == [
+            "dataverse-mcp",
+            "atlan-mcp",
+        ]
