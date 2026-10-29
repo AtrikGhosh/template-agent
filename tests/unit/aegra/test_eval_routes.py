@@ -1240,6 +1240,57 @@ class TestEvalRun:
         assert result.was_interrupted is True
         assert result.pre_approval_response == "Awaiting your approval"
         assert result.response == "Email sent successfully"
+        resume = client.post.await_args_list[2].kwargs["json"]["command"]["resume"]
+        assert resume == {"decisions": [{"type": "approve"}]}
+
+    async def test_run_answers_user_question_with_stand_in(self):
+        pre_approval_state = {
+            "__interrupt__": [
+                {
+                    "value": {
+                        "type": "user_question",
+                        "question": "Units?",
+                        "options": ["kg", "lbs"],
+                    }
+                }
+            ],
+            "messages": [{"type": "ai", "content": "Which units?"}],
+        }
+        post_approval_state = {
+            "messages": [{"type": "ai", "content": "Using kilograms."}],
+        }
+
+        thread_resp = MagicMock()
+        thread_resp.raise_for_status = MagicMock()
+        thread_resp.json = MagicMock(return_value={"thread_id": "t-question"})
+
+        pre_resp = MagicMock()
+        pre_resp.raise_for_status = MagicMock()
+        pre_resp.json = MagicMock(return_value=pre_approval_state)
+
+        post_resp = MagicMock()
+        post_resp.raise_for_status = MagicMock()
+        post_resp.json = MagicMock(return_value=post_approval_state)
+
+        client = AsyncMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.post = AsyncMock(side_effect=[thread_resp, pre_resp, post_resp])
+
+        with patch(
+            "deep_agent.aegra.eval_routes.httpx.AsyncClient", return_value=client
+        ):
+            with patch(
+                "deep_agent.aegra.eval_routes._collect_subagent_tool_calls_via_remote_graph",
+                new=AsyncMock(return_value=[]),
+            ):
+                result = await er.eval_run(
+                    er.EvalRunRequest(query="How tall?", auto_approve=True)
+                )
+
+        assert result.response == "Using kilograms."
+        resume = client.post.await_args_list[2].kwargs["json"]["command"]["resume"]
+        assert resume == "No preference. Continue with the most reasonable choice."
 
     async def test_run_uses_provided_conversation_id(self):
         run_state = {"messages": [{"type": "ai", "content": "ok", "tool_calls": []}]}
