@@ -16,6 +16,7 @@ _EMPTY_QUESTION = (
     "No question was asked. Call ask_user again with a non-empty question."
 )
 _NO_ANSWER = "The user did not provide an answer."
+_NON_INTERACTIVE = "No preference. Continue with the most reasonable choice."
 
 _DESCRIPTION = """Asks the user one question and waits until they answer.
 
@@ -45,11 +46,25 @@ def _clean_options(options: Any) -> list[str]:
     return [item.strip() for item in options if isinstance(item, str) and item.strip()]
 
 
+def _is_interactive() -> bool:
+    """True only when the chat UI marked this run as interactive."""
+    try:
+        from langgraph.config import get_config
+    except ImportError:
+        return False
+    cfg = get_config() or {}
+    configurable = cfg.get("configurable") or {}
+    return bool(configurable.get("interactive"))
+
+
 def _ask(question: str, options: list[str] | None = None) -> str:
     """Pause for one answer. A blank question does not pause the run."""
     text = question.strip() if isinstance(question, str) else ""
     if not text:
         return _EMPTY_QUESTION
+    # Headless / webhook / eval never set interactive — do not block them.
+    if not _is_interactive():
+        return _NON_INTERACTIVE
     answer = interrupt(
         {
             "type": "user_question",
