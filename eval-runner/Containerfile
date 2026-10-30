@@ -9,13 +9,13 @@ RUN dnf install -y git && dnf clean all
 RUN pip install --no-cache-dir --upgrade pip
 
 RUN pip install --no-cache-dir \
-    "lightspeed-evaluation @ git+https://github.com/lightspeed-core/lightspeed-evaluation.git@v0.8.0" \
+    "lightspeed-evaluation @ git+https://github.com/lightspeed-core/lightspeed-evaluation.git@d6194d57b1af8cfb6749fe4bad1f8156d3e9694c" \
     fastapi \
     "uvicorn[standard]" \
     httpx \
     pyyaml \
     psycopg2-binary \
-    "msgpack==1.2.1" \
+    "msgpack==1.2.3" \
     "setuptools>=78.1.1"
 
 # pip is not needed at runtime and its vendored deps (pip/_vendor/vendor.txt)
